@@ -15,9 +15,10 @@ import { FavoriteButton } from "./AuthModal";
 export function CompanyCard({ company }: { company: Company }) {
   const { selectedCompanyIds, toggleSelect, openCompanyDetail } = useStore();
   const role = roleForCompany(company.id);
-  if (!role) return null;
   const selected = selectedCompanyIds.includes(company.id);
-  const stale = role.status === "stale";
+  const stale = role?.status === "stale";
+  const title = role?.title ?? company.name;
+  const freshness = role?.freshnessLabel ?? company.fundedRelative ?? "Active";
 
   const openLevelTwo = () => openCompanyDetail(company.id);
 
@@ -25,7 +26,7 @@ export function CompanyCard({ company }: { company: Company }) {
     <article
       role="button"
       tabIndex={0}
-      aria-label={`${role.title} at ${company.name}. Open company insight.`}
+      aria-label={`${title} at ${company.name}. Open company insight.`}
       className="cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg"
       onClick={(event) => {
         const target = event.target as HTMLElement;
@@ -61,7 +62,7 @@ export function CompanyCard({ company }: { company: Company }) {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-xl font-semibold leading-snug text-slate-900">
-                  {role.title}
+                  {title}
                 </h2>
                 <span
                   className={`rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -70,7 +71,7 @@ export function CompanyCard({ company }: { company: Company }) {
                       : "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100"
                   }`}
                 >
-                  {role.freshnessLabel}
+                  {freshness}
                 </span>
               </div>
               <p className="mt-1 text-sm font-medium text-slate-700">{company.name}</p>
@@ -114,7 +115,7 @@ export function CompanyCard({ company }: { company: Company }) {
               <p className="mt-1 text-lg font-semibold leading-6 text-slate-900">
                 {unavailable(company.fundedRelative)}
               </p>
-              <p className="mt-0.5 text-xs text-slate-500">Posted {unavailable(role.postedDate)}</p>
+              <p className="mt-0.5 text-xs text-slate-500">Posted {unavailable(role?.postedDate)}</p>
             </div>
           </div>
 

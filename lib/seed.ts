@@ -237,7 +237,10 @@ export const defaultSaved: SavedApplication[] = [
 ];
 
 export function getInsight(companyId: string) {
-  return companyInsights.find((item) => item.companyId === companyId);
+  return (
+    companyInsights.find((item) => item.companyId === companyId) ??
+    buildInsight(companyId, [62, 58, 64, 55, 52, 60], [])
+  );
 }
 
 function buildInsight(

@@ -1,6 +1,7 @@
 "use client";
 
 import { SearchX } from "lucide-react";
+import { isOpenFilter } from "@/lib/filterMatch";
 import { industries } from "@/lib/seed";
 import { useStore } from "@/lib/store";
 import { CompanyCard } from "./CompanyCard";
@@ -8,12 +9,12 @@ import { CompanyCard } from "./CompanyCard";
 export function Dashboard() {
   const { filters, setFilters, clearFilters, filteredCompanies, loading } = useStore();
   const hasActiveFilters =
-    filters.industry !== "All industries" ||
-    filters.funding !== "all" ||
-    filters.location !== "all" ||
-    filters.size !== "all" ||
-    filters.rating !== "all" ||
-    filters.roleStatus !== "all";
+    !isOpenFilter(filters.industry) ||
+    !isOpenFilter(filters.funding) ||
+    !isOpenFilter(filters.location) ||
+    !isOpenFilter(filters.size) ||
+    !isOpenFilter(filters.rating) ||
+    !isOpenFilter(filters.roleStatus);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -100,7 +101,7 @@ export function Dashboard() {
                 onClick={clearFilters}
                 className="mb-0.5 text-sm font-medium text-[#c41e3a] hover:underline"
               >
-                Clear filters
+                Clear Filters
               </button>
             ) : null}
           </div>
@@ -122,14 +123,14 @@ export function Dashboard() {
             <SearchX className="mx-auto h-8 w-8 text-slate-400" />
             <h2 className="mt-3 text-lg font-semibold text-slate-900">No companies match these filters</h2>
             <p className="mt-2 text-sm text-slate-500">
-              Nothing in this seeded board meets the current industry, funding, location, size, rating, and role-status combination.
+              Nothing in this board meets the current industry, funding, location, size, rating, and role-status combination.
             </p>
             <button
               type="button"
               onClick={clearFilters}
               className="mt-4 rounded-lg bg-[#c41e3a] px-4 py-2 text-sm font-medium text-white"
             >
-              Clear filters
+              Clear Filters
             </button>
           </div>
         ) : (

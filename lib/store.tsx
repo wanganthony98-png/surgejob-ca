@@ -18,6 +18,13 @@ import {
   roles,
   setLiveCompanies,
 } from "./seed";
+import {
+  fundingMatches,
+  industryMatches,
+  isOpenFilter,
+  locationMatches,
+  sizeMatches,
+} from "./filterMatch";
 import type { Company, Filters, SavedApplication, SavedStatus, View } from "./types";
 
 const STORAGE_KEY = "surgejob-v2";
@@ -81,24 +88,28 @@ const StoreContext = createContext<Store | null>(null);
 
 function matchesFilters(companyId: string, filters: Filters) {
   const company = getCompany(companyId);
+  if (!company) return false;
   const role = roleForCompany(companyId);
-  if (!company || !role) return false;
 
-  if (filters.industry !== "All industries" && company.industry !== filters.industry) {
-    return false;
-  }
-  if (filters.funding !== "all" && company.fundingRound !== filters.funding) return false;
-  if (filters.location !== "all" && company.location !== filters.location) return false;
-  if (filters.size !== "all" && company.headcount !== filters.size) return false;
+  if (!industryMatches(company.industry, filters.industry)) return false;
+  if (!fundingMatches(company.fundingRound, filters.funding)) return false;
+  if (!locationMatches(company.location, filters.location)) return false;
+  if (!sizeMatches(company.headcount, filters.size)) return false;
   if (filters.rating === "4.0+" && (company.glassdoorRating === null || company.glassdoorRating < 4)) {
     return false;
   }
   if (filters.rating === "4.3+" && (company.glassdoorRating === null || company.glassdoorRating < 4.3)) {
     return false;
   }
-  if (filters.roleStatus === "active" && role.status !== "active") return false;
-  if (filters.roleStatus === "stale" && role.status !== "stale") return false;
+  if (!isOpenFilter(filters.roleStatus)) {
+    if (!role) return false;
+    if (normalizeRoleStatus(filters.roleStatus) !== role.status) return false;
+  }
   return true;
+}
+
+function normalizeRoleStatus(value: string) {
+  return value.trim().toLowerCase() === "stale" ? "stale" : "active";
 }
 
 export function StoreProvider({

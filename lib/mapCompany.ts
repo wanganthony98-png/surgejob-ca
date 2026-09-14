@@ -35,6 +35,16 @@ function initials(name: string) {
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
 }
 
+function canonicalFundingRound(value: string) {
+  const n = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (n.includes("series c")) return "Series C";
+  if (n.includes("series b")) return "Series B";
+  if (n.includes("series a")) return "Series A";
+  if (n.includes("pre seed") || n.includes("preseed")) return "Pre-seed";
+  if (n.includes("seed")) return "Seed";
+  return value.trim() || "Seed";
+}
+
 export function mapCompanyRow(row: Record<string, unknown>): Company | null {
   const id = asString(row.id ?? row.slug);
   const name = asString(row.name);
@@ -45,22 +55,30 @@ export function mapCompanyRow(row: Record<string, unknown>): Company | null {
     row.headcountLabel ?? row.headcount_label,
     `${headcount} employees`,
   );
+  const location = asString(
+    row.location ?? row.city ?? row.hq ?? row.headquarters,
+    "Canada",
+  );
+  const fundingRaw = asString(
+    row.fundingRound ?? row.funding_round ?? row.funding_stage ?? row.funding ?? row.round,
+    "Seed",
+  );
 
   return {
     id,
     name,
     mark: asString(row.mark, initials(name)),
     markColor: asString(row.markColor ?? row.mark_color, "#0f766e"),
-    industry: asString(row.industry, "B2B SaaS"),
+    industry: asString(row.industry ?? row.sector, ""),
     mission: asString(row.mission ?? row.description, ""),
-    fundingRound: asString(row.fundingRound ?? row.funding_round, "Seed"),
+    fundingRound: canonicalFundingRound(fundingRaw),
     fundingAmount: asNullableString(row.fundingAmount ?? row.funding_amount),
     fundingDate: asNullableString(row.fundingDate ?? row.funding_date),
     fundedRelative: asNullableString(row.fundedRelative ?? row.funded_relative),
     leadInvestor: asNullableString(row.leadInvestor ?? row.lead_investor),
     headcount,
     headcountLabel,
-    location: asString(row.location, "Canada"),
+    location,
     workArrangement: arrangement(row.workArrangement ?? row.work_arrangement),
     glassdoorRating: asNumber(row.glassdoorRating ?? row.glassdoor_rating),
     openRoleCount: asNumber(row.openRoleCount ?? row.open_role_count) ?? 0,
