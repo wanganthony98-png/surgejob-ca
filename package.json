@@ -6,9 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "scrape:jobs": "node scripts/scrapeJobs.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "apify-client": "^2.25.0",
     "framer-motion": "^13.2.0",
     "lucide-react": "^1.45.0",
     "motion": "^13.2.0",

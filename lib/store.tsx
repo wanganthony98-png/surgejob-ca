@@ -10,14 +10,15 @@ import {
 } from "react";
 import {
   buildEvidenceSummary,
-  companies,
+  companies as seedCompanies,
   defaultSaved,
   getCompany,
   getRole,
   roleForCompany,
   roles,
+  setLiveCompanies,
 } from "./seed";
-import type { Filters, SavedApplication, SavedStatus, View } from "./types";
+import type { Company, Filters, SavedApplication, SavedStatus, View } from "./types";
 
 const STORAGE_KEY = "surgejob-v2";
 
@@ -72,7 +73,7 @@ type Store = {
   detailCompanyId: string | null;
   openCompanyDetail: (companyId: string) => void;
   closeCompanyDetail: () => void;
-  filteredCompanies: typeof companies;
+  filteredCompanies: Company[];
   compareEnabled: boolean;
 };
 
@@ -100,7 +101,14 @@ function matchesFilters(companyId: string, filters: Filters) {
   return true;
 }
 
-export function StoreProvider({ children }: { children: React.ReactNode }) {
+export function StoreProvider({
+  children,
+  initialCompanies,
+}: {
+  children: React.ReactNode;
+  initialCompanies: Company[];
+}) {
+  setLiveCompanies(initialCompanies);
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>({ name: "dashboard" });
@@ -159,8 +167,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [toast]);
 
   const filteredCompanies = useMemo(
-    () => companies.filter((c) => matchesFilters(c.id, filters)),
-    [filters],
+    () => initialCompanies.filter((c) => matchesFilters(c.id, filters)),
+    [filters, initialCompanies],
   );
 
   const compareEnabled = filteredCompanies.filter((c) =>
@@ -315,4 +323,4 @@ export function useStore() {
   return ctx;
 }
 
-export { companies, roles, getCompany, getRole, roleForCompany };
+export { seedCompanies as companies, roles, getCompany, getRole, roleForCompany };

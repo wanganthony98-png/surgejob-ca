@@ -332,8 +332,20 @@ export const companyInsights: CompanyInsight[] = [
   ]),
 ];
 
+export const mockData = companies;
+
+let liveCompanies: Company[] = companies;
+
+export function setLiveCompanies(next: Company[]) {
+  liveCompanies = next.length > 0 ? next : companies;
+}
+
+export function getLiveCompanies() {
+  return liveCompanies;
+}
+
 export function getCompany(id: string) {
-  return companies.find((c) => c.id === id);
+  return liveCompanies.find((c) => c.id === id);
 }
 
 export function getRole(id: string) {

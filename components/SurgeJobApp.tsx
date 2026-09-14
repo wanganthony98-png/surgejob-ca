@@ -10,6 +10,7 @@ import { Header } from "./Header";
 import { RoleDetail } from "./RoleDetail";
 import { SavedApplications } from "./SavedApplications";
 import { StoreProvider, useStore } from "@/lib/store";
+import type { Company } from "@/lib/types";
 
 function Toast() {
   const { toast } = useStore();
@@ -58,9 +59,9 @@ function Shell() {
   );
 }
 
-export function SurgeJobApp() {
+export function SurgeJobApp({ companies }: { companies: Company[] }) {
   return (
-    <StoreProvider>
+    <StoreProvider initialCompanies={companies}>
       <Shell />
     </StoreProvider>
   );
