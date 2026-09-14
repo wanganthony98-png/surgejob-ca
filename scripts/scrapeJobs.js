@@ -37,6 +37,25 @@ function loadEnvFile(filePath) {
 
 loadEnvFile(path.join(__dirname, "..", ".env.local"));
 
+function missingEnv(name) {
+  const value = process.env[name];
+  return !value || !String(value).trim();
+}
+
+if (missingEnv("APIFY_API_TOKEN")) {
+  console.error(
+    "Missing APIFY_API_TOKEN. Add it as a GitHub Actions secret (or to .env.local for local runs) and re-run the scraper.",
+  );
+  process.exit(1);
+}
+
+if (missingEnv("SUPABASE_SERVICE_ROLE_KEY")) {
+  console.error(
+    "Missing SUPABASE_SERVICE_ROLE_KEY. Add it as a GitHub Actions secret (or to .env.local for local runs) and re-run the scraper.",
+  );
+  process.exit(1);
+}
+
 function requireEnv(name) {
   const value = process.env[name];
   if (!value) {
@@ -354,9 +373,15 @@ async function upsertCompanies(supabase, rows) {
 
 async function main() {
   const token = requireEnv("APIFY_API_TOKEN");
-  const supabaseUrl = requireEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
   const serviceKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
   const scrapedAt = new Date().toISOString();
+
+  if (!supabaseUrl) {
+    throw new Error(
+      "Missing supabaseUrl. Set SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL in GitHub Actions secrets (or .env.local) before createClient() runs. Expected a project URL like https://<project-ref>.supabase.co.",
+    );
+  }
 
   const items = await fetchNews(token);
   const rows = dedupeCompanies(items.map((item) => toCompanyRow(item, scrapedAt)).filter(Boolean));
