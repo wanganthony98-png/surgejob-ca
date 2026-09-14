@@ -373,15 +373,16 @@ async function upsertCompanies(supabase, rows) {
 
 async function main() {
   const token = requireEnv("APIFY_API_TOKEN");
-  const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
   const serviceKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
   const scrapedAt = new Date().toISOString();
 
-  if (!supabaseUrl) {
-    throw new Error(
-      "Missing supabaseUrl. Set SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL in GitHub Actions secrets (or .env.local) before createClient() runs. Expected a project URL like https://<project-ref>.supabase.co.",
-    );
-  }
+  console.log("Env debug (present/absent, values hidden):", {
+    NEXT_PUBLIC_SUPABASE_URL: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
+    SUPABASE_URL: Boolean(process.env.SUPABASE_URL),
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+    APIFY_API_TOKEN: Boolean(process.env.APIFY_API_TOKEN),
+    SUPABASE_SERVICE_ROLE_KEY: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+  });
 
   const items = await fetchNews(token);
   const rows = dedupeCompanies(items.map((item) => toCompanyRow(item, scrapedAt)).filter(Boolean));
@@ -389,6 +390,12 @@ async function main() {
   if (rows.length === 0) {
     console.log("No company rows parsed from Apify results; leaving Supabase unchanged.");
     return;
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  if (!supabaseUrl) {
+    console.error("❌ CRITICAL: Supabase URL is missing from process.env!");
+    process.exit(1);
   }
 
   const supabase = createClient(supabaseUrl, serviceKey, {
