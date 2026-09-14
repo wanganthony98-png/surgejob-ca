@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+select,
+textarea,
+input {
+  font-family: inherit;
+}
+
+.hero-glow {
+  background:
+    radial-gradient(900px 420px at 12% -10%, rgba(196, 30, 58, 0.16), transparent 55%),
+    radial-gradient(700px 360px at 88% 0%, rgba(16, 185, 129, 0.14), transparent 50%),
+    linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+}
+
+.star-glow {
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.25), 0 8px 24px -12px rgba(245, 158, 11, 0.55);
+}
+
+.cover-aurora {
+  background:
+    radial-gradient(720px 420px at 18% 20%, rgba(196, 30, 58, 0.45), transparent 58%),
+    radial-gradient(640px 380px at 82% 18%, rgba(16, 185, 129, 0.28), transparent 52%),
+    radial-gradient(900px 500px at 50% 90%, rgba(59, 130, 246, 0.22), transparent 60%);
+  animation: cover-aurora-shift 14s ease-in-out infinite alternate;
+}
+
+@keyframes cover-aurora-shift {
+  from {
+    transform: scale(1) translate3d(0, 0, 0);
+    filter: hue-rotate(0deg);
+  }
+  to {
+    transform: scale(1.12) translate3d(-4%, 3%, 0);
+    filter: hue-rotate(18deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-aurora {
+    animation: none;
+  }
+}
