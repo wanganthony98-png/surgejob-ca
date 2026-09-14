@@ -392,13 +392,20 @@ async function main() {
     return;
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  if (!supabaseUrl) {
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+  const cleanedUrl = rawUrl.trim().replace(/^["']|["']$/g, "");
+  console.log("DEBUG Supabase URL Check:");
+  console.log("- Raw Length:", rawUrl.length);
+  console.log("- Cleaned Length:", cleanedUrl.length);
+  console.log("- Starts with https:// :", cleanedUrl.startsWith("https://"));
+  console.log("- First 15 chars:", JSON.stringify(cleanedUrl.substring(0, 15)));
+  if (!cleanedUrl) {
     console.error("❌ CRITICAL: Supabase URL is missing from process.env!");
     process.exit(1);
   }
 
-  const supabase = createClient(supabaseUrl, serviceKey, {
+  const supabaseServiceKey = serviceKey;
+  const supabase = createClient(cleanedUrl, supabaseServiceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   await upsertCompanies(supabase, rows);
