@@ -1,4 +1,10 @@
-import type { Company, EvidenceCompleteness, WorkArrangement } from "./types";
+import type {
+  Company,
+  EvidenceCompleteness,
+  PeerRole,
+  RadarData,
+  WorkArrangement,
+} from "./types";
 
 function asString(value: unknown, fallback = "") {
   if (value === null || value === undefined) return fallback;
@@ -8,6 +14,13 @@ function asString(value: unknown, fallback = "") {
 function asNullableString(value: unknown) {
   if (value === null || value === undefined || value === "") return null;
   return String(value);
+}
+
+function asUrl(value: unknown) {
+  const raw = asNullableString(value);
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `https://${raw.replace(/^\/+/, "")}`;
 }
 
 function asNumber(value: unknown) {
@@ -45,44 +58,145 @@ function canonicalFundingRound(value: string) {
   return value.trim() || "Seed";
 }
 
+function clampRadar(n: number) {
+  return Math.max(50, Math.min(95, Math.round(n)));
+}
+
+function parseRadarData(value: unknown): RadarData | null {
+  let raw = value;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const keys = ["growth", "product", "market", "leadership", "culture", "capital"] as const;
+  const next: Partial<RadarData> = {};
+  for (const key of keys) {
+    const num = asNumber(obj[key]);
+    if (num === null) return null;
+    next[key] = clampRadar(num);
+  }
+  return next as RadarData;
+}
+
+function parsePeerRoles(value: unknown): PeerRole[] {
+  let raw = value;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      const title = asString(row.title).trim();
+      const location = asString(row.location, "Canada").trim() || "Canada";
+      const url = asString(row.url ?? row.apply_url ?? row.applyUrl).trim();
+      if (!title || !url) return null;
+      return { title, location, url };
+    })
+    .filter((role): role is PeerRole => role !== null);
+}
+
+function relativeFromFundingDate(fundingDate: string | null) {
+  if (!fundingDate) return null;
+  const funded = new Date(`${fundingDate}T00:00:00Z`);
+  if (Number.isNaN(funded.getTime())) return null;
+  const days = Math.max(
+    0,
+    Math.round((Date.now() - funded.getTime()) / (1000 * 60 * 60 * 24)),
+  );
+  if (days < 7) return "Funded this week";
+  if (days < 30) return `Funded ${days} days ago`;
+  if (days < 60) return "Funded last month";
+  const months = Math.round(days / 30);
+  return `Funded ${months} month${months === 1 ? "" : "s"} ago`;
+}
+
 export function mapCompanyRow(row: Record<string, unknown>): Company | null {
-  const id = asString(row.id ?? row.slug);
   const name = asString(row.name);
-  if (!id || !name) return null;
+  if (!name) return null;
+  const id = asString(row.id ?? row.slug, name);
 
   const headcount = asString(row.headcount ?? row.size ?? row.headcount_range, "11-50");
   const headcountLabel = asString(
     row.headcountLabel ?? row.headcount_label,
     `${headcount} employees`,
   );
+  const hqCity = asNullableString(row.hq_city ?? row.hqCity);
+  const locationRegion = asNullableString(row.location_region ?? row.locationRegion);
   const location = asString(
-    row.location ?? row.city ?? row.hq ?? row.headquarters,
+    row.location ??
+      (hqCity && locationRegion ? `${hqCity} · ${locationRegion}` : hqCity || locationRegion),
     "Canada",
   );
   const fundingRaw = asString(
     row.fundingRound ?? row.funding_round ?? row.funding_stage ?? row.funding ?? row.round,
     "Seed",
   );
+  const fundingDate = asNullableString(row.fundingDate ?? row.funding_date);
+  const radarData = parseRadarData(row.radar_data ?? row.radarData);
+  const surgeIndex =
+    asNumber(row.surge_index ?? row.surgeIndex) ??
+    (radarData
+      ? Math.round(
+          (radarData.growth +
+            radarData.product +
+            radarData.market +
+            radarData.leadership +
+            radarData.culture +
+            radarData.capital) /
+            6,
+        )
+      : null);
+
+  const lead = asNullableString(row.leadInvestor ?? row.lead_investor);
+  const isActive =
+    row.is_active === false || row.isActive === false
+      ? false
+      : row.is_active === true || row.isActive === true
+        ? true
+        : true;
 
   return {
     id,
     name,
     mark: asString(row.mark, initials(name)),
     markColor: asString(row.markColor ?? row.mark_color, "#0f766e"),
-    industry: asString(row.industry ?? row.sector, ""),
-    mission: asString(row.mission ?? row.description, ""),
+    industry: asString(row.industry ?? row.sector, "Others"),
+    mission: asString(row.tagline ?? row.mission ?? row.description ?? row.summary, ""),
     fundingRound: canonicalFundingRound(fundingRaw),
     fundingAmount: asNullableString(row.fundingAmount ?? row.funding_amount),
-    fundingDate: asNullableString(row.fundingDate ?? row.funding_date),
-    fundedRelative: asNullableString(row.fundedRelative ?? row.funded_relative),
-    leadInvestor: asNullableString(row.leadInvestor ?? row.lead_investor),
+    fundingDate,
+    fundedRelative:
+      asNullableString(row.fundedRelative ?? row.funded_relative) ??
+      relativeFromFundingDate(fundingDate),
+    leadInvestor: lead && !/^unknown$/i.test(lead) ? lead : "Undisclosed",
     headcount,
     headcountLabel,
     location,
+    hqCity,
+    locationRegion,
     workArrangement: arrangement(row.workArrangement ?? row.work_arrangement),
     glassdoorRating: asNumber(row.glassdoorRating ?? row.glassdoor_rating),
     openRoleCount: asNumber(row.openRoleCount ?? row.open_role_count) ?? 0,
     evidenceCompleteness: completeness(row.evidenceCompleteness ?? row.evidence_completeness),
+    radarData,
+    surgeIndex,
+    isActive,
+    linkedinUrl: asNullableString(row.linkedinUrl ?? row.linkedin_url),
+    applyUrl: asNullableString(row.applyUrl ?? row.apply_url),
+    websiteUrl: asUrl(row.websiteUrl ?? row.website_url ?? row.website ?? row.domain),
+    hiringSignal: asNullableString(row.hiringSignal ?? row.hiring_signal),
+    peerRoles: parsePeerRoles(row.peerRoles ?? row.peer_roles),
   };
 }
 

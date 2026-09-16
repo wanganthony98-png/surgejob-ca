@@ -1,4 +1,4 @@
-import type { Company, CompanyInsight, Role, SavedApplication } from "./types";
+import type { Company, CompanyInsight, RadarData, Role, SavedApplication } from "./types";
 
 export const companies: Company[] = [
   {
@@ -217,9 +217,19 @@ export const industries = [
   "All industries",
   "Fintech",
   "AI & Data",
-  "CleanTech & Energy",
+  "Cleantech & Energy",
+  "CleanTech",
   "B2B SaaS",
   "Privacy & Security",
+  "AgTech",
+  "FoodTech",
+  "Telecom & Infra",
+  "Hardware & Robotics",
+  "Robotics",
+  "Autonomous Driving",
+  "Semiconductors",
+  "HealthTech",
+  "Others",
 ] as const;
 
 export const defaultSaved: SavedApplication[] = [
@@ -236,17 +246,25 @@ export const defaultSaved: SavedApplication[] = [
   },
 ];
 
-export function getInsight(companyId: string) {
-  return (
-    companyInsights.find((item) => item.companyId === companyId) ??
-    buildInsight(companyId, [62, 58, 64, 55, 52, 60], [])
-  );
+export function getInsight(companyId: string, radar?: RadarData | null, surgeIndex?: number | null) {
+  if (radar) {
+    return buildInsight(
+      companyId,
+      [radar.capital, radar.growth, radar.leadership, radar.culture, radar.product, radar.market],
+      [],
+      surgeIndex ?? undefined,
+    );
+  }
+  const seeded = companyInsights.find((item) => item.companyId === companyId);
+  if (seeded) return seeded;
+  return buildInsight(companyId, [62, 58, 64, 55, 52, 60], []);
 }
 
 function buildInsight(
   companyId: string,
   values: number[],
   peers: CompanyInsight["peers"],
+  overrideSurge?: number,
 ): CompanyInsight {
   const metrics = [
     "Capital Velocity",
@@ -256,7 +274,8 @@ function buildInsight(
     "Fresh Opportunity",
     "Market Traction",
   ];
-  const surgeIndex = Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+  const surgeIndex =
+    overrideSurge ?? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
   const tier =
     surgeIndex >= 85 ? "Tier 1 Growth" : surgeIndex >= 72 ? "Tier 2 Scaling" : "Early Signal";
   return {

@@ -1,13 +1,41 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import { SearchX } from "lucide-react";
 import { isOpenFilter } from "@/lib/filterMatch";
 import { industries } from "@/lib/seed";
 import { useStore } from "@/lib/store";
+import type { Company } from "@/lib/types";
 import { CompanyCard } from "./CompanyCard";
 
+const ITEMS_PER_PAGE = 10;
+
+function isFreshFunding(company: Company, days = 30) {
+  if (!company.fundingDate) {
+    return /funded (this week|\d+ days ago|last month)/i.test(company.fundedRelative || "");
+  }
+  const parsed = Date.parse(
+    /^\d{4}-\d{2}-\d{2}/.test(company.fundingDate)
+      ? `${company.fundingDate}T00:00:00Z`
+      : company.fundingDate,
+  );
+  if (Number.isNaN(parsed)) {
+    return /funded (this week|\d+ days ago|last month)/i.test(company.fundedRelative || "");
+  }
+  return (Date.now() - parsed) / (1000 * 60 * 60 * 24) <= days;
+}
+
+function withActiveFallback(company: Company): Company {
+  const is_active =
+    Boolean(company.isActive) ||
+    company.openRoleCount > 0 ||
+    isFreshFunding(company, 30);
+  return { ...company, isActive: is_active };
+}
+
 export function Dashboard() {
-  const { filters, setFilters, clearFilters, filteredCompanies, loading } = useStore();
+  const { filters, setFilters, clearFilters, filteredCompanies, companies, loading } = useStore();
+  const [currentPage, setCurrentPage] = useState(1);
   const hasActiveFilters =
     !isOpenFilter(filters.industry) ||
     !isOpenFilter(filters.funding) ||
@@ -15,6 +43,25 @@ export function Dashboard() {
     !isOpenFilter(filters.size) ||
     !isOpenFilter(filters.rating) ||
     !isOpenFilter(filters.roleStatus);
+
+  const displayCompanies = useMemo(() => {
+    const source = filteredCompanies.length > 0 ? filteredCompanies : companies;
+    return source.map(withActiveFallback);
+  }, [filteredCompanies, companies]);
+
+  const totalPages = Math.max(1, Math.ceil(displayCompanies.length / ITEMS_PER_PAGE));
+  const paginatedCompanies = displayCompanies.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE,
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -118,12 +165,15 @@ export function Dashboard() {
               />
             ))}
           </div>
-        ) : filteredCompanies.length === 0 ? (
+        ) : displayCompanies.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
             <SearchX className="mx-auto h-8 w-8 text-slate-400" />
-            <h2 className="mt-3 text-lg font-semibold text-slate-900">No companies match these filters</h2>
+            <h2 className="mt-3 text-lg font-semibold text-slate-900">
+              No companies match these filters
+            </h2>
             <p className="mt-2 text-sm text-slate-500">
-              Nothing in this board meets the current industry, funding, location, size, rating, and role-status combination.
+              Nothing in this board meets the current industry, funding, location, size, rating, and
+              role-status combination.
             </p>
             <button
               type="button"
@@ -134,9 +184,34 @@ export function Dashboard() {
             </button>
           </div>
         ) : (
-          filteredCompanies.map((company) => (
-            <CompanyCard key={company.id} company={company} />
-          ))
+          <>
+            {paginatedCompanies.map((company) => (
+              <CompanyCard key={company.id} company={company} />
+            ))}
+            {totalPages > 1 ? (
+              <div className="flex items-center justify-center gap-4 pt-2">
+                <button
+                  type="button"
+                  disabled={currentPage === 1}
+                  onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <p className="text-sm text-slate-600">
+                  Page {currentPage} of {totalPages}
+                </p>
+                <button
+                  type="button"
+                  disabled={currentPage === totalPages}
+                  onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </div>

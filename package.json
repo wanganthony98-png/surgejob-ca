@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "scrape:jobs": "node scripts/scrapeJobs.js"
+    "scrape:jobs": "node scripts/scrapeJobs.js",
+    "test:openai": "node --env-file=.env.local scripts/testOpenAI.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
@@ -16,6 +17,7 @@
     "lucide-react": "^1.45.0",
     "motion": "^13.2.0",
     "next": "16.3.5",
+    "openai": "^7.15.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "recharts": "^3.10.1"

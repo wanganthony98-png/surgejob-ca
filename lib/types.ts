@@ -3,6 +3,21 @@ export type RoleStatus = "active" | "stale";
 export type SavedStatus = "considering" | "applied" | "closed";
 export type EvidenceCompleteness = "complete" | "incomplete";
 
+export type RadarData = {
+  growth: number;
+  product: number;
+  market: number;
+  leadership: number;
+  culture: number;
+  capital: number;
+};
+
+export type PeerRole = {
+  title: string;
+  location: string;
+  url: string;
+};
+
 export type Company = {
   id: string;
   name: string;
@@ -18,10 +33,20 @@ export type Company = {
   headcount: string;
   headcountLabel: string;
   location: string;
+  hqCity?: string | null;
+  locationRegion?: string | null;
   workArrangement: WorkArrangement;
   glassdoorRating: number | null;
   openRoleCount: number;
   evidenceCompleteness: EvidenceCompleteness;
+  radarData?: RadarData | null;
+  surgeIndex?: number | null;
+  isActive?: boolean;
+  linkedinUrl?: string | null;
+  applyUrl?: string | null;
+  websiteUrl?: string | null;
+  hiringSignal?: string | null;
+  peerRoles?: PeerRole[] | null;
 };
 
 export type Role = {

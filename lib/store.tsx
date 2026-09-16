@@ -81,6 +81,7 @@ type Store = {
   openCompanyDetail: (companyId: string) => void;
   closeCompanyDetail: () => void;
   filteredCompanies: Company[];
+  companies: Company[];
   compareEnabled: boolean;
 };
 
@@ -322,6 +323,7 @@ export function StoreProvider({
     openCompanyDetail,
     closeCompanyDetail,
     filteredCompanies,
+    companies: initialCompanies,
     compareEnabled,
   };
 
