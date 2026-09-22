@@ -20,7 +20,7 @@ const reasons = [
 ];
 
 export function AuthModal() {
-  const { authMode, openAuth, login, notify } = useStore();
+  const { authMode, openAuth, login, signInWithGoogle } = useStore();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -75,14 +75,14 @@ export function AuthModal() {
             {isSignup ? "Create your account" : "Log in"}
           </h3>
           <p className="mt-1 text-sm text-slate-500">
-            Simulated auth for this prototype. Favorites persist in this browser.
+            Log in with Google to save jobs to your account and sync them across devices.
           </p>
           <button
             type="button"
-            onClick={() => {
-              console.log("Google OAuth initiated");
-              setGoogleStatus("Google OAuth initiated");
-              notify("Google OAuth initiated");
+            onClick={async () => {
+              setGoogleStatus("Redirecting to Google…");
+              const { error } = await signInWithGoogle();
+              if (error) setGoogleStatus(error.message);
             }}
             className="mt-5 flex w-full items-center justify-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:shadow"
           >

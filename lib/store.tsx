@@ -11,7 +11,6 @@ import {
 import {
   buildEvidenceSummary,
   companies as seedCompanies,
-  defaultSaved,
   getCompany,
   getRole,
   roleForCompany,
@@ -20,11 +19,16 @@ import {
 } from "./seed";
 import {
   fundingMatches,
+  hasOpenRoles,
   industryMatches,
   isOpenFilter,
-  locationMatches,
   sizeMatches,
 } from "./filterMatch";
+import { companyMatchesLocation } from "./companyLocations";
+import { signInWithGoogle as signInWithGoogleRequest, userFromSession } from "./auth";
+import { addSavedJob, fetchSavedCompanyIds, removeSavedJob } from "./savedJobs";
+import { supabase } from "./supabaseClient";
+import type { AuthUser } from "./auth";
 import type { Company, Filters, SavedApplication, SavedStatus, View } from "./types";
 
 const STORAGE_KEY = "surgejob-v2";
@@ -40,11 +44,11 @@ const defaultFilters: Filters = {
 
 type Persisted = {
   selectedCompanyIds: string[];
-  favoriteCompanyIds: string[];
+  // Saved jobs/favorites are bound to the user's Supabase account, not localStorage.
   saved: SavedApplication[];
   fitNotes: Record<string, string>;
   filters: Filters;
-  user: { name: string; email: string } | null;
+  user: AuthUser | null;
 };
 
 type AuthMode = "login" | "signup" | null;
@@ -60,7 +64,7 @@ type Store = {
   saved: SavedApplication[];
   fitNotes: Record<string, string>;
   toast: string | null;
-  user: { name: string; email: string } | null;
+  user: AuthUser | null;
   authMode: AuthMode;
   setView: (view: View) => void;
   setFilters: (next: Partial<Filters> | Filters) => void;
@@ -75,6 +79,7 @@ type Store = {
   removeSaved: (savedId: string) => void;
   openAuth: (mode: AuthMode) => void;
   login: (name: string, email: string) => void;
+  signInWithGoogle: () => Promise<{ error: Error | null }>;
   logout: () => void;
   notify: (message: string) => void;
   detailCompanyId: string | null;
@@ -90,11 +95,13 @@ const StoreContext = createContext<Store | null>(null);
 function matchesFilters(companyId: string, filters: Filters) {
   const company = getCompany(companyId);
   if (!company) return false;
+  // Defense-in-depth: never surface companies without open roles on the board.
+  if (!hasOpenRoles(company)) return false;
   const role = roleForCompany(companyId);
 
   if (!industryMatches(company.industry, filters.industry)) return false;
   if (!fundingMatches(company.fundingRound, filters.funding)) return false;
-  if (!locationMatches(company.location, filters.location)) return false;
+  if (!companyMatchesLocation(company, roles, filters.location)) return false;
   if (!sizeMatches(company.headcount, filters.size)) return false;
   if (filters.rating === "4.0+" && (company.glassdoorRating === null || company.glassdoorRating < 4)) {
     return false;
@@ -128,12 +135,11 @@ export function StoreProvider({
   const [selectedCompanyIds, setSelected] = useState<string[]>([]);
   const [favoriteCompanyIds, setFavorites] = useState<string[]>([]);
   const [expandedIds, setExpanded] = useState<string[]>([]);
-  const [saved, setSaved] = useState<SavedApplication[]>(defaultSaved);
-  const [fitNotes, setFitNotesState] = useState<Record<string, string>>({
-    "maplestack-designer": defaultSaved[0].fitNotes,
-  });
+  // Saved applications and saved jobs/favorites start empty (Saved 0) by default.
+  const [saved, setSaved] = useState<SavedApplication[]>([]);
+  const [fitNotes, setFitNotesState] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
-  const [user, setUser] = useState<{ name: string; email: string } | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>(null);
   const [detailCompanyId, setDetailCompanyId] = useState<string | null>(null);
 
@@ -143,11 +149,9 @@ export function StoreProvider({
       if (raw) {
         const parsed = JSON.parse(raw) as Persisted;
         setSelected(parsed.selectedCompanyIds ?? []);
-        setFavorites(parsed.favoriteCompanyIds ?? []);
-        setSaved(parsed.saved?.length ? parsed.saved : defaultSaved);
-        setFitNotesState(
-          parsed.fitNotes ?? { "maplestack-designer": defaultSaved[0].fitNotes },
-        );
+        // Favorites are account-bound (Supabase), never restored from localStorage.
+        setSaved(parsed.saved ?? []);
+        setFitNotesState(parsed.fitNotes ?? {});
         setFiltersState({ ...defaultFilters, ...parsed.filters });
         setUser(parsed.user ?? null);
       }
@@ -160,17 +164,62 @@ export function StoreProvider({
   }, []);
 
   useEffect(() => {
+    let active = true;
+
+    // Pull the user's saved jobs from Supabase so state persists across devices.
+    const hydrateSavedJobs = (sessionUser: AuthUser | null) => {
+      if (!sessionUser?.id) return;
+      fetchSavedCompanyIds(supabase, sessionUser.id)
+        .then((ids) => {
+          if (active) setFavorites(ids);
+        })
+        .catch(() => {
+          /* Unreachable auth/db (e.g. local placeholder); leave favorites as-is. */
+        });
+    };
+
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (!active) return;
+        const sessionUser = userFromSession(data.session);
+        if (sessionUser) {
+          setUser(sessionUser);
+          hydrateSavedJobs(sessionUser);
+        }
+      })
+      .catch(() => {
+        /* No reachable auth server (e.g. local placeholder); keep local user. */
+      });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
+      const sessionUser = userFromSession(session);
+      if (sessionUser) {
+        setUser(sessionUser);
+        hydrateSavedJobs(sessionUser);
+      } else if (event === "SIGNED_OUT") {
+        setUser(null);
+        setFavorites([]);
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!ready) return;
     const payload: Persisted = {
       selectedCompanyIds,
-      favoriteCompanyIds,
       saved,
       fitNotes,
       filters,
       user,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [ready, selectedCompanyIds, favoriteCompanyIds, saved, fitNotes, filters, user]);
+  }, [ready, selectedCompanyIds, saved, fitNotes, filters, user]);
 
   useEffect(() => {
     if (!toast) return;
@@ -205,23 +254,74 @@ export function StoreProvider({
     setSelected((prev) => prev.filter((id) => id !== companyId));
   }, []);
 
-  const toggleFavorite = useCallback((companyId: string) => {
-    setFavorites((prev) =>
-      prev.includes(companyId) ? prev.filter((id) => id !== companyId) : [...prev, companyId],
-    );
-  }, []);
+  const toggleFavorite = useCallback(
+    (companyId: string) => {
+      // Guests (or users without a Supabase account) are prompted to log in.
+      if (!user?.id) {
+        setToast("Please log in to save jobs to your account.");
+        setAuthMode("login");
+        return;
+      }
+
+      const wasSaved = favoriteCompanyIds.includes(companyId);
+      // Optimistic UI update, then sync to Supabase (revert on failure).
+      setFavorites((prev) =>
+        wasSaved ? prev.filter((id) => id !== companyId) : [...prev, companyId],
+      );
+
+      const sync = wasSaved
+        ? removeSavedJob(supabase, user.id, companyId)
+        : addSavedJob(supabase, user.id, companyId);
+
+      sync.catch(() => {
+        setFavorites((prev) =>
+          wasSaved
+            ? prev.includes(companyId)
+              ? prev
+              : [...prev, companyId]
+            : prev.filter((id) => id !== companyId),
+        );
+        setToast("Couldn't sync your saved jobs. Please try again.");
+      });
+    },
+    [user, favoriteCompanyIds],
+  );
 
   const openAuth = useCallback((mode: AuthMode) => {
     setAuthMode(mode);
   }, []);
 
   const login = useCallback((name: string, email: string) => {
-    setUser({ name, email });
+    // Simulated local login (no Supabase account): id is empty, so saving still
+    // prompts a real Google sign-in. Real accounts arrive via signInWithGoogle.
+    setUser({ id: "", name, email, avatarUrl: null });
     setAuthMode(null);
-    setToast(`Welcome${name ? `, ${name}` : ""}. Favorites stay on this device.`);
+    setToast(`Welcome${name ? `, ${name}` : ""}.`);
   }, []);
 
-  const logout = useCallback(() => {
+  const signInWithGoogle = useCallback(async () => {
+    const redirectTo =
+      typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : undefined;
+    try {
+      const { error } = await signInWithGoogleRequest(supabase, redirectTo);
+      if (error) {
+        setToast(`Google sign-in failed: ${error.message}`);
+        return { error };
+      }
+      return { error: null };
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      setToast(`Google sign-in failed: ${normalized.message}`);
+      return { error: normalized };
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      /* Ignore network errors from a placeholder/unreachable auth server. */
+    }
     setUser(null);
     setToast("Signed out.");
   }, []);
@@ -317,6 +417,7 @@ export function StoreProvider({
     removeSaved,
     openAuth,
     login,
+    signInWithGoogle,
     logout,
     notify,
     detailCompanyId,

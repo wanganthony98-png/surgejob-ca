@@ -42,6 +42,30 @@ function isAnchorCompany(name) {
   return ANCHOR_COMPANY_SET.has(String(name || "").trim().toLowerCase());
 }
 
+/**
+ * Global enterprise giants that must never be treated as Canadian startups.
+ * They are discarded during extraction and purged from Supabase on every run.
+ */
+const GLOBAL_GIANTS_BLACKLIST = [
+  "Nvidia",
+  "NVIDIA",
+  "Microsoft",
+  "Google",
+  "Amazon",
+  "Meta",
+  "Apple",
+];
+
+const GLOBAL_GIANTS_BLACKLIST_SET = new Set(
+  GLOBAL_GIANTS_BLACKLIST.map((n) => n.trim().toLowerCase()),
+);
+
+function isBlacklistedCompany(name) {
+  const normalized = String(name || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return GLOBAL_GIANTS_BLACKLIST_SET.has(normalized);
+}
+
 const LINKEDIN_COMPANY_MAP = {
   Cohere: {
     linkedin_url: "https://www.linkedin.com/company/cohere-ai",
@@ -371,7 +395,8 @@ const EXTRACTION_SCHEMA = {
     },
     hq_city: {
       type: ["string", "null"],
-      description: 'HQ city such as "Waterloo" or "Toronto".',
+      description:
+        'HQ city name ONLY (no province/country), e.g. "Waterloo" or "Toronto". Never a vague region ("Greater Toronto Area"), a bare province/country ("Ontario", "Canada"), or a work model ("Hybrid"). Any open-role location must instead use the strict "City, Province/State Code" format, or "Remote" / "Remote (Canada)" / "Remote (US)".',
     },
     location_region: {
       type: "string",
@@ -440,9 +465,16 @@ Industry (pick ONE best fit from ${INDUSTRIES.join(" | ")}):
 - Prefer specific tags: Autonomous Driving, Semiconductors, Robotics, CleanTech, Telecom & Infra, AgTech, FoodTech, AI & Data, HealthTech.
 - Do NOT default everything to B2B SaaS. Put sector words in industry/tagline — never in name.
 
+LOCATION FORMATTING — STRICT (applies to hq_city and to the location of EVERY open role / open_roles entry):
+- Canadian cities MUST be "City, Province Code": "Toronto, ON", "Vancouver, BC", "Montreal, QC", "Calgary, AB", "Waterloo, ON".
+- US / global cities MUST be "City, State/Country Code": "New York, NY", "San Francisco, CA".
+- Remote roles MUST be exactly "Remote", or "Remote (Canada)" / "Remote (US)" when the country is known.
+- FORBIDDEN as a location: raw provinces/countries or vague regions such as "Ontario", "Canada", "Greater Toronto Area", or work models like "Hybrid"/"On-site". A hybrid/on-site model is an EMPLOYMENT TYPE, never a location — never put it in the location field.
+- For hq_city specifically, still return the CITY ONLY (e.g. "Toronto"); the province code is derived separately via location_region.
+
 Other fields:
 - funding_date: YYYY-MM-DD best estimate; null if impossible.
-- hq_city: city only. location_region: one of ${LOCATION_REGIONS.join(" | ")}.
+- hq_city: city only, correctly spelled (e.g. "Waterloo", "Toronto"). location_region: one of ${LOCATION_REGIONS.join(" | ")}.
 - tagline: 1 sentence, max 20 words, what the product does (no funding/news wording).
 - lead_investor: VC name or "Undisclosed". Never "Unknown".
 - radar_data: growth/product/market/leadership/culture/capital integers 50–95.`;
@@ -476,12 +508,16 @@ function missingEnv(name) {
   return !value || !String(value).trim();
 }
 
-for (const key of ["APIFY_API_TOKEN", "SUPABASE_SERVICE_ROLE_KEY", "OPENAI_API_KEY"]) {
-  if (missingEnv(key)) {
-    console.error(
-      `Missing ${key}. Add it as a GitHub Actions secret (or to .env.local for local runs) and re-run the scraper.`,
-    );
-    process.exit(1);
+// Only hard-fail on missing secrets when running the scraper directly; when the
+// module is imported (e.g. unit tests) the pure helpers must remain usable.
+if (require.main === module) {
+  for (const key of ["APIFY_API_TOKEN", "SUPABASE_SERVICE_ROLE_KEY", "OPENAI_API_KEY"]) {
+    if (missingEnv(key)) {
+      console.error(
+        `Missing ${key}. Add it as a GitHub Actions secret (or to .env.local for local runs) and re-run the scraper.`,
+      );
+      process.exit(1);
+    }
   }
 }
 
@@ -758,6 +794,237 @@ function normalizeRegion(value, city) {
   if (/(montreal|laval|longueuil)/.test(hay)) return "Montreal Area";
   if (/(ottawa|kanata|gatineau)/.test(hay)) return "Ottawa Region";
   return "Others";
+}
+
+// ---------------------------------------------------------------------------
+// Strict location standardization (shared by role + HQ locations before write).
+// ---------------------------------------------------------------------------
+
+const PROVINCE_NAME_TO_CODE = {
+  ontario: "ON",
+  "british columbia": "BC",
+  quebec: "QC",
+  québec: "QC",
+  alberta: "AB",
+  manitoba: "MB",
+  saskatchewan: "SK",
+  "nova scotia": "NS",
+  "new brunswick": "NB",
+  "newfoundland and labrador": "NL",
+  newfoundland: "NL",
+  "prince edward island": "PE",
+  "northwest territories": "NT",
+  nunavut: "NU",
+  yukon: "YT",
+  "yukon territory": "YT",
+};
+
+const PROVINCE_CODES = new Set([
+  "ON",
+  "BC",
+  "QC",
+  "AB",
+  "MB",
+  "SK",
+  "NS",
+  "NB",
+  "NL",
+  "PE",
+  "NT",
+  "NU",
+  "YT",
+]);
+
+const US_STATE_NAME_TO_CODE = {
+  california: "CA",
+  "new york": "NY",
+  washington: "WA",
+  texas: "TX",
+  massachusetts: "MA",
+  illinois: "IL",
+  florida: "FL",
+  georgia: "GA",
+  colorado: "CO",
+  oregon: "OR",
+  virginia: "VA",
+  pennsylvania: "PA",
+  "north carolina": "NC",
+  "new jersey": "NJ",
+  michigan: "MI",
+  arizona: "AZ",
+  ohio: "OH",
+  utah: "UT",
+  minnesota: "MN",
+  tennessee: "TN",
+  "district of columbia": "DC",
+};
+
+const US_STATE_CODES = new Set(Object.values(US_STATE_NAME_TO_CODE));
+
+/** City → default province code, used when a role/HQ omits the province. */
+const CITY_TO_PROVINCE = {
+  toronto: "ON",
+  mississauga: "ON",
+  brampton: "ON",
+  markham: "ON",
+  vaughan: "ON",
+  scarborough: "ON",
+  ottawa: "ON",
+  kanata: "ON",
+  waterloo: "ON",
+  kitchener: "ON",
+  cambridge: "ON",
+  guelph: "ON",
+  london: "ON",
+  hamilton: "ON",
+  burlington: "ON",
+  oakville: "ON",
+  kingston: "ON",
+  windsor: "ON",
+  montreal: "QC",
+  montréal: "QC",
+  laval: "QC",
+  longueuil: "QC",
+  gatineau: "QC",
+  "quebec city": "QC",
+  vancouver: "BC",
+  burnaby: "BC",
+  surrey: "BC",
+  richmond: "BC",
+  victoria: "BC",
+  kelowna: "BC",
+  calgary: "AB",
+  edmonton: "AB",
+  "red deer": "AB",
+  winnipeg: "MB",
+  saskatoon: "SK",
+  regina: "SK",
+  halifax: "NS",
+  dartmouth: "NS",
+  moncton: "NB",
+  fredericton: "NB",
+  "saint john": "NB",
+  "st. john's": "NL",
+  "st johns": "NL",
+  charlottetown: "PE",
+};
+
+/** Vague region phrases → a representative standardized "City, PROV". */
+const REGION_PHRASE_TO_CITY = {
+  "greater toronto area": "Toronto, ON",
+  gta: "Toronto, ON",
+  "toronto area": "Toronto, ON",
+  "greater vancouver": "Vancouver, BC",
+  "metro vancouver": "Vancouver, BC",
+  "vancouver area": "Vancouver, BC",
+  "montreal area": "Montreal, QC",
+  "greater montreal": "Montreal, QC",
+  "ottawa region": "Ottawa, ON",
+  "national capital region": "Ottawa, ON",
+  "sw ontario": "Waterloo, ON",
+  "southwestern ontario": "Waterloo, ON",
+  "waterloo region": "Waterloo, ON",
+};
+
+const EMPLOYMENT_TYPE_RE =
+  /\b(hybrid|on-?site|onsite|in-?office|in office|flexible|full-?time|part-?time|contract|permanent)\b/gi;
+const EMPLOYMENT_TYPE_TEST =
+  /\b(hybrid|on-?site|onsite|in-?office|in office|flexible|full-?time|part-?time|contract|permanent)\b/i;
+
+function titleCaseCity(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/\b([a-z])/g, (m, c) => c.toUpperCase());
+}
+
+function locationToCode(token) {
+  const cleaned = String(token || "").replace(/\./g, "").trim();
+  const upper = cleaned.toUpperCase();
+  if (PROVINCE_CODES.has(upper)) return upper;
+  if (US_STATE_CODES.has(upper)) return upper;
+  const lower = cleaned.toLowerCase();
+  if (PROVINCE_NAME_TO_CODE[lower]) return PROVINCE_NAME_TO_CODE[lower];
+  if (US_STATE_NAME_TO_CODE[lower]) return US_STATE_NAME_TO_CODE[lower];
+  return null;
+}
+
+/**
+ * Normalize a raw location string to the strict SurgeJob format:
+ *   - Canadian: "City, PROV" (e.g. "Toronto, ON")
+ *   - US/global: "City, ST" (e.g. "San Francisco, CA")
+ *   - Remote: "Remote" | "Remote (Canada)" | "Remote (US)"
+ * Full province/state names are converted to codes; a bare known city gets its
+ * default province appended; hybrid/on-site and country suffixes are stripped.
+ * Returns null only for empty input.
+ */
+function standardizeLocation(raw) {
+  if (raw == null) return null;
+  let text = String(raw).replace(/\s+/g, " ").trim();
+  if (!text) return null;
+
+  // Remote roles: standardize and (when known) attach the country.
+  if (/\bremote\b/i.test(text) || /\bwork from home\b/i.test(text) || /\bwfh\b/i.test(text)) {
+    if (/\b(united states|u\.?s\.?a?|usa|us)\b/i.test(text)) return "Remote (US)";
+    if (/\b(canada|canadian)\b/i.test(text)) return "Remote (Canada)";
+    return "Remote";
+  }
+
+  // Drop employment-type qualifiers (hybrid/on-site/etc.) — these belong to the
+  // employment type, not the location.
+  text = text.replace(/\(([^)]*)\)/g, (m, inner) =>
+    EMPLOYMENT_TYPE_TEST.test(inner) ? " " : m,
+  );
+  text = text.replace(EMPLOYMENT_TYPE_RE, " ");
+  text = text
+    .replace(/[·|/]+/g, ",")
+    .replace(/\s+[-–—]\s+/g, ", ")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/^[\s,\-–—]+|[\s,\-–—]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return null;
+
+  if (REGION_PHRASE_TO_CITY[text.toLowerCase()]) {
+    return REGION_PHRASE_TO_CITY[text.toLowerCase()];
+  }
+
+  let parts = text
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .filter((p) => !/^(canada|united states|usa|u\.?s\.?a?\.?|us)$/i.test(p));
+
+  // Only a country was provided → treat as remote for that country.
+  if (parts.length === 0) {
+    if (/\b(united states|u\.?s\.?a?|usa|us)\b/i.test(text)) return "Remote (US)";
+    return "Remote (Canada)";
+  }
+
+  const city = parts[0];
+
+  // A region phrase in the city slot → representative city.
+  if (REGION_PHRASE_TO_CITY[city.toLowerCase()]) {
+    return REGION_PHRASE_TO_CITY[city.toLowerCase()];
+  }
+
+  let code = null;
+  for (let i = 1; i < parts.length; i += 1) {
+    code = locationToCode(parts[i]);
+    if (code) break;
+  }
+
+  if (!code) {
+    // Bare province/state name → its code (e.g. "Ontario" → "ON").
+    const soleCode = locationToCode(city);
+    if (soleCode && parts.length === 1) return soleCode;
+    // Bare known city → append its default province.
+    const cityProvince = CITY_TO_PROVINCE[city.toLowerCase()];
+    if (cityProvince) return `${titleCaseCity(city)}, ${cityProvince}`;
+    // Unknown/unmappable → best-effort cleaned city.
+    return titleCaseCity(city);
+  }
+
+  return `${titleCaseCity(city)}, ${code}`;
 }
 
 function normalizeFundingDate(value) {
@@ -1169,9 +1436,17 @@ function toCompanyRow(extracted, sourceItem) {
 
   const cleaned = extractCompanyEntityName(extracted.name, articleTitle, articleSnippet);
   if (!cleaned || isInvalidCompanyName(cleaned)) return null;
+  if (isBlacklistedCompany(cleaned)) {
+    console.log(`[Blacklist] Discarding global giant during extraction: ${cleaned}`);
+    return null;
+  }
 
   const name = toTitleCaseName(cleaned);
   if (name.length < 3) return null;
+  if (isBlacklistedCompany(name)) {
+    console.log(`[Blacklist] Discarding global giant during extraction: ${name}`);
+    return null;
+  }
 
   const tagline =
     cleanTagline(extracted.tagline) ||
@@ -1200,7 +1475,9 @@ function toCompanyRow(extracted, sourceItem) {
     industry,
     hq_city,
     location_region,
-    location: hq_city ? `${hq_city}, ${location_region}` : location_region,
+    location:
+      standardizeLocation(hq_city ? `${hq_city}, ${location_region}` : location_region) ||
+      (hq_city ? `${hq_city}, ${location_region}` : location_region),
     lead_investor: normalizeLeadInvestor(extracted.lead_investor),
     peer_roles: [],
     open_role_count: 0,
@@ -1232,7 +1509,9 @@ function buildSandboxCompanyRows() {
       industry: meta.industry,
       hq_city: meta.hq_city,
       location_region: meta.location_region,
-      location: `${meta.hq_city} · ${meta.location_region}`,
+      location:
+        standardizeLocation(`${meta.hq_city}, ${meta.location_region}`) ||
+        `${meta.hq_city} · ${meta.location_region}`,
       lead_investor: meta.lead_investor,
       headcount: "51-200",
       is_active: isActiveFundingDate(meta.funding_date),
@@ -1252,7 +1531,7 @@ function buildSandboxCompanyRows() {
       ...withRadar,
       is_active: computeIsActive(withRadar),
     };
-  }).filter(Boolean);
+  }).filter((row) => row && !isBlacklistedCompany(row.name));
 }
 
 function parseJobPostedDate(raw) {
@@ -1333,7 +1612,8 @@ function hiringSignalFromCount(count) {
 function peerRolesFromJobs(jobs) {
   return jobs.slice(0, 15).map((job) => ({
     title: job.title,
-    location: job.location,
+    // Enforce the strict "City, PROV" / Remote format on every open role.
+    location: standardizeLocation(job.location) || "Remote",
     url: job.apply_url,
   }));
 }
@@ -1802,7 +2082,9 @@ function buildAnchorCompanyRow(name) {
     industry: meta.industry,
     hq_city: meta.hq_city,
     location_region: meta.location_region,
-    location: `${meta.hq_city} · ${meta.location_region}`,
+    location:
+      standardizeLocation(`${meta.hq_city}, ${meta.location_region}`) ||
+      `${meta.hq_city} · ${meta.location_region}`,
     lead_investor: meta.lead_investor,
     headcount: "51-200",
     linkedin_url: getLinkedInUrl(name, meta.careers_url),
@@ -1941,6 +2223,59 @@ async function wipeStaleGarbageEntities(supabase, keepCompanies) {
   return stale.length;
 }
 
+/**
+ * Immediately delete any blacklisted global-giant rows (e.g. Nvidia/NVIDIA) and
+ * their associated roles from Supabase. Company rows carry their roles inline in
+ * `peer_roles`, so deleting the row removes them; we also make a best-effort
+ * attempt to clear a separate `roles` table when one exists.
+ */
+async function purgeBlacklistedCompanies(supabase) {
+  const { data, error } = await supabase.from("companies").select("id,name");
+  if (error) {
+    console.warn(
+      "[Blacklist] Could not list companies for giant purge:",
+      error.message || error,
+    );
+    return 0;
+  }
+
+  const targets = (data || []).filter((row) => isBlacklistedCompany(row.name));
+  if (targets.length === 0) {
+    console.log("[Blacklist] No blacklisted global giants present in Supabase.");
+    return 0;
+  }
+
+  const ids = targets.map((row) => row.id).filter(Boolean);
+  const names = targets.map((row) => row.name);
+  console.log(
+    `[Blacklist] Deleting ${targets.length} global-giant rows: ${names.join(", ")}`,
+  );
+
+  if (ids.length) {
+    // Best-effort cleanup of a separate roles table keyed by company_id.
+    const { error: rolesErr } = await supabase.from("roles").delete().in("company_id", ids);
+    if (rolesErr) {
+      console.warn(
+        "[Blacklist] Associated roles cleanup skipped (roles are inline on companies):",
+        rolesErr.message || rolesErr,
+      );
+    }
+    const { error: delById } = await supabase.from("companies").delete().in("id", ids);
+    if (!delById) return targets.length;
+    console.warn(
+      "[Blacklist] Delete by id failed, trying by name:",
+      delById.message || delById,
+    );
+  }
+
+  const { error: delByName } = await supabase.from("companies").delete().in("name", names);
+  if (delByName) {
+    console.warn("[Blacklist] Delete by name failed:", delByName.message || delByName);
+    return 0;
+  }
+  return targets.length;
+}
+
 async function main() {
   const token = requireEnv("APIFY_API_TOKEN");
   const openaiKey = requireEnv("OPENAI_API_KEY");
@@ -1969,6 +2304,15 @@ async function main() {
     const items = await fetchNews(token);
     console.log(`Extracting companies from ${items.length} articles with ${LLM_MODEL}…`);
     cleanCompanies = dedupeCompanies(await mapItemsWithOpenAI(openai, items));
+  }
+
+  // Safety net: never write blacklisted global giants regardless of source path.
+  const beforeBlacklist = cleanCompanies.length;
+  cleanCompanies = cleanCompanies.filter((row) => !isBlacklistedCompany(row.name));
+  if (cleanCompanies.length !== beforeBlacklist) {
+    console.log(
+      `[Blacklist] Dropped ${beforeBlacklist - cleanCompanies.length} global-giant row(s) before write.`,
+    );
   }
 
   if (cleanCompanies.length === 0) {
@@ -2008,12 +2352,20 @@ async function main() {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // Purge blacklisted global giants (e.g. Nvidia) and their roles immediately.
+  const purged = await purgeBlacklistedCompanies(supabase);
+
   // Anchor protection: always re-include Cohere/Waabi/TransCrypts/Haply/Simuhealth/Taalas.
   cleanCompanies = await mergeAnchorCompaniesForUpsert(supabase, cleanCompanies);
+  // Re-apply blacklist in case a merge step reintroduced a giant.
+  cleanCompanies = cleanCompanies.filter((row) => !isBlacklistedCompany(row.name));
 
   // Wipe stale headline/garbage entities (anchors never deleted).
   const wiped = await wipeStaleGarbageEntities(supabase, cleanCompanies);
   await upsertCompanies(supabase, cleanCompanies);
+  if (purged) {
+    console.log(`[Blacklist] Purged ${purged} pre-existing global-giant row(s) from Supabase.`);
+  }
 
   const activeCount = cleanCompanies.filter((row) => row.is_active).length;
   console.log(
@@ -2021,7 +2373,18 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  GLOBAL_GIANTS_BLACKLIST,
+  isBlacklistedCompany,
+  toCompanyRow,
+  buildSandboxCompanyRows,
+  purgeBlacklistedCompanies,
+  standardizeLocation,
+};
