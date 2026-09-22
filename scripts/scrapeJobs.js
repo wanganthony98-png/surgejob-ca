@@ -42,6 +42,30 @@ function isAnchorCompany(name) {
   return ANCHOR_COMPANY_SET.has(String(name || "").trim().toLowerCase());
 }
 
+/**
+ * Global enterprise giants that must never be treated as Canadian startups.
+ * They are discarded during extraction and purged from Supabase on every run.
+ */
+const GLOBAL_GIANTS_BLACKLIST = [
+  "Nvidia",
+  "NVIDIA",
+  "Microsoft",
+  "Google",
+  "Amazon",
+  "Meta",
+  "Apple",
+];
+
+const GLOBAL_GIANTS_BLACKLIST_SET = new Set(
+  GLOBAL_GIANTS_BLACKLIST.map((n) => n.trim().toLowerCase()),
+);
+
+function isBlacklistedCompany(name) {
+  const normalized = String(name || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return GLOBAL_GIANTS_BLACKLIST_SET.has(normalized);
+}
+
 const LINKEDIN_COMPANY_MAP = {
   Cohere: {
     linkedin_url: "https://www.linkedin.com/company/cohere-ai",
@@ -476,12 +500,16 @@ function missingEnv(name) {
   return !value || !String(value).trim();
 }
 
-for (const key of ["APIFY_API_TOKEN", "SUPABASE_SERVICE_ROLE_KEY", "OPENAI_API_KEY"]) {
-  if (missingEnv(key)) {
-    console.error(
-      `Missing ${key}. Add it as a GitHub Actions secret (or to .env.local for local runs) and re-run the scraper.`,
-    );
-    process.exit(1);
+// Only hard-fail on missing secrets when running the scraper directly; when the
+// module is imported (e.g. unit tests) the pure helpers must remain usable.
+if (require.main === module) {
+  for (const key of ["APIFY_API_TOKEN", "SUPABASE_SERVICE_ROLE_KEY", "OPENAI_API_KEY"]) {
+    if (missingEnv(key)) {
+      console.error(
+        `Missing ${key}. Add it as a GitHub Actions secret (or to .env.local for local runs) and re-run the scraper.`,
+      );
+      process.exit(1);
+    }
   }
 }
 
@@ -1169,9 +1197,17 @@ function toCompanyRow(extracted, sourceItem) {
 
   const cleaned = extractCompanyEntityName(extracted.name, articleTitle, articleSnippet);
   if (!cleaned || isInvalidCompanyName(cleaned)) return null;
+  if (isBlacklistedCompany(cleaned)) {
+    console.log(`[Blacklist] Discarding global giant during extraction: ${cleaned}`);
+    return null;
+  }
 
   const name = toTitleCaseName(cleaned);
   if (name.length < 3) return null;
+  if (isBlacklistedCompany(name)) {
+    console.log(`[Blacklist] Discarding global giant during extraction: ${name}`);
+    return null;
+  }
 
   const tagline =
     cleanTagline(extracted.tagline) ||
@@ -1252,7 +1288,7 @@ function buildSandboxCompanyRows() {
       ...withRadar,
       is_active: computeIsActive(withRadar),
     };
-  }).filter(Boolean);
+  }).filter((row) => row && !isBlacklistedCompany(row.name));
 }
 
 function parseJobPostedDate(raw) {
@@ -1941,6 +1977,59 @@ async function wipeStaleGarbageEntities(supabase, keepCompanies) {
   return stale.length;
 }
 
+/**
+ * Immediately delete any blacklisted global-giant rows (e.g. Nvidia/NVIDIA) and
+ * their associated roles from Supabase. Company rows carry their roles inline in
+ * `peer_roles`, so deleting the row removes them; we also make a best-effort
+ * attempt to clear a separate `roles` table when one exists.
+ */
+async function purgeBlacklistedCompanies(supabase) {
+  const { data, error } = await supabase.from("companies").select("id,name");
+  if (error) {
+    console.warn(
+      "[Blacklist] Could not list companies for giant purge:",
+      error.message || error,
+    );
+    return 0;
+  }
+
+  const targets = (data || []).filter((row) => isBlacklistedCompany(row.name));
+  if (targets.length === 0) {
+    console.log("[Blacklist] No blacklisted global giants present in Supabase.");
+    return 0;
+  }
+
+  const ids = targets.map((row) => row.id).filter(Boolean);
+  const names = targets.map((row) => row.name);
+  console.log(
+    `[Blacklist] Deleting ${targets.length} global-giant rows: ${names.join(", ")}`,
+  );
+
+  if (ids.length) {
+    // Best-effort cleanup of a separate roles table keyed by company_id.
+    const { error: rolesErr } = await supabase.from("roles").delete().in("company_id", ids);
+    if (rolesErr) {
+      console.warn(
+        "[Blacklist] Associated roles cleanup skipped (roles are inline on companies):",
+        rolesErr.message || rolesErr,
+      );
+    }
+    const { error: delById } = await supabase.from("companies").delete().in("id", ids);
+    if (!delById) return targets.length;
+    console.warn(
+      "[Blacklist] Delete by id failed, trying by name:",
+      delById.message || delById,
+    );
+  }
+
+  const { error: delByName } = await supabase.from("companies").delete().in("name", names);
+  if (delByName) {
+    console.warn("[Blacklist] Delete by name failed:", delByName.message || delByName);
+    return 0;
+  }
+  return targets.length;
+}
+
 async function main() {
   const token = requireEnv("APIFY_API_TOKEN");
   const openaiKey = requireEnv("OPENAI_API_KEY");
@@ -1969,6 +2058,15 @@ async function main() {
     const items = await fetchNews(token);
     console.log(`Extracting companies from ${items.length} articles with ${LLM_MODEL}…`);
     cleanCompanies = dedupeCompanies(await mapItemsWithOpenAI(openai, items));
+  }
+
+  // Safety net: never write blacklisted global giants regardless of source path.
+  const beforeBlacklist = cleanCompanies.length;
+  cleanCompanies = cleanCompanies.filter((row) => !isBlacklistedCompany(row.name));
+  if (cleanCompanies.length !== beforeBlacklist) {
+    console.log(
+      `[Blacklist] Dropped ${beforeBlacklist - cleanCompanies.length} global-giant row(s) before write.`,
+    );
   }
 
   if (cleanCompanies.length === 0) {
@@ -2008,12 +2106,20 @@ async function main() {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // Purge blacklisted global giants (e.g. Nvidia) and their roles immediately.
+  const purged = await purgeBlacklistedCompanies(supabase);
+
   // Anchor protection: always re-include Cohere/Waabi/TransCrypts/Haply/Simuhealth/Taalas.
   cleanCompanies = await mergeAnchorCompaniesForUpsert(supabase, cleanCompanies);
+  // Re-apply blacklist in case a merge step reintroduced a giant.
+  cleanCompanies = cleanCompanies.filter((row) => !isBlacklistedCompany(row.name));
 
   // Wipe stale headline/garbage entities (anchors never deleted).
   const wiped = await wipeStaleGarbageEntities(supabase, cleanCompanies);
   await upsertCompanies(supabase, cleanCompanies);
+  if (purged) {
+    console.log(`[Blacklist] Purged ${purged} pre-existing global-giant row(s) from Supabase.`);
+  }
 
   const activeCount = cleanCompanies.filter((row) => row.is_active).length;
   console.log(
@@ -2021,7 +2127,17 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  GLOBAL_GIANTS_BLACKLIST,
+  isBlacklistedCompany,
+  toCompanyRow,
+  buildSandboxCompanyRows,
+  purgeBlacklistedCompanies,
+};
