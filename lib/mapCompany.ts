@@ -90,6 +90,10 @@ function parseRadarData(value: unknown): RadarData | null {
   return next as RadarData;
 }
 
+function isPeerRole(role: PeerRole | null | undefined): role is PeerRole {
+  return role != null && typeof role.title === "string" && role.title.trim().length > 0;
+}
+
 function parsePeerRoles(value: unknown): PeerRole[] {
   let raw = value;
   if (typeof raw === "string") {
@@ -100,22 +104,28 @@ function parsePeerRoles(value: unknown): PeerRole[] {
     }
   }
   if (!Array.isArray(raw)) return [];
-  return raw
-    .map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const row = item as Record<string, unknown>;
-      const title = asString(row.title).trim();
-      const location = sanitizeRoleLocation(asString(row.location, "Remote (Canada)"));
-      const rawUrl = asNullableString(row.url ?? row.apply_url ?? row.applyUrl ?? row.job_url);
-      const url = resolveRoleApplyUrl(rawUrl, null);
-      const postedAt = toIsoDate(
-        asNullableString(row.postedAt ?? row.posted_at ?? row.posted_date ?? row.postedDate),
-      );
-      if (!title) return null;
-      // Drop roles that only had contaminated URLs and no title context — keep title with null url.
-      return { title, location, url, postedAt };
-    })
-    .filter((role): role is PeerRole => role !== null);
+
+  const mapped: Array<PeerRole | null> = raw.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const row = item as Record<string, unknown>;
+    const title = asString(row.title).trim();
+    const location = sanitizeRoleLocation(asString(row.location, "Remote (Canada)"));
+    const rawUrl = asNullableString(row.url ?? row.apply_url ?? row.applyUrl ?? row.job_url);
+    const url = resolveRoleApplyUrl(rawUrl, null);
+    const postedAt = toIsoDate(
+      asNullableString(row.postedAt ?? row.posted_at ?? row.posted_date ?? row.postedDate),
+    );
+    if (!title) return null;
+    const role: PeerRole = {
+      title,
+      location,
+      url,
+      postedAt: postedAt ?? null,
+    };
+    return role;
+  });
+
+  return mapped.filter(isPeerRole);
 }
 
 function relativeFromFundingDate(fundingDate: string | null) {

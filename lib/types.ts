@@ -17,6 +17,7 @@ export type PeerRole = {
   location: string;
   /** Explicit apply URL, or null → UI should use company careers page. */
   url: string | null;
+  /** Latest known post date for this role (YYYY-MM-DD), if available. */
   postedAt?: string | null;
 };
 
