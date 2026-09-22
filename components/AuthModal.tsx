@@ -75,14 +75,22 @@ export function AuthModal() {
             {isSignup ? "Create your account" : "Log in"}
           </h3>
           <p className="mt-1 text-sm text-slate-500">
-            Simulated auth for this prototype. Favorites persist in this browser.
+            Sign in with Google to sync saved companies to your SurgeJob account.
           </p>
           <button
             type="button"
-            onClick={() => {
-              console.log("Google OAuth initiated");
-              setGoogleStatus("Google OAuth initiated");
-              notify("Google OAuth initiated");
+            onClick={async () => {
+              try {
+                console.log("Google OAuth initiated");
+                setGoogleStatus("Redirecting to Google…");
+                notify("Google OAuth initiated");
+                const { signInWithGoogle } = await import("@/lib/userSavedJobs");
+                await signInWithGoogle();
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                setGoogleStatus(message);
+                notify("Google sign-in failed. Check Supabase Auth provider settings.");
+              }
             }}
             className="mt-5 flex w-full items-center justify-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:shadow"
           >
@@ -132,7 +140,9 @@ export function AuthModal() {
           </label>
           <p className="mt-3 flex items-start gap-2 text-xs text-slate-400">
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            No live identity provider. Anything you type stays local.
+            Saved jobs sync to Supabase <code className="text-[10px]">user_saved_jobs</code> via{" "}
+            <code className="text-[10px]">auth.users.id</code>. Enable Google under Authentication →
+            Providers.
           </p>
           <button
             type="submit"
@@ -177,14 +187,27 @@ function GoogleMark() {
 }
 
 export function FavoriteButton({ companyId, companyName }: { companyId: string; companyName: string }) {
-  const { favoriteCompanyIds, toggleFavorite } = useStore();
+  const { favoriteCompanyIds, toggleFavorite, user, openAuth } = useStore();
   const active = favoriteCompanyIds.includes(companyId);
   return (
     <button
       type="button"
-      onClick={() => toggleFavorite(companyId)}
+      onClick={() => {
+        if (!user) {
+          openAuth("login");
+          return;
+        }
+        toggleFavorite(companyId);
+      }}
       aria-pressed={active}
-      aria-label={active ? `Unfavorite ${companyName}` : `Favorite ${companyName}`}
+      aria-label={
+        user
+          ? active
+            ? `Unfavorite ${companyName}`
+            : `Favorite ${companyName}`
+          : `Log in to save ${companyName}`
+      }
+      title={user ? undefined : "Log in with Google to save"}
       className={`rounded-full border p-2 transition ${
         active
           ? "border-rose-200 bg-rose-50 text-rose-600"

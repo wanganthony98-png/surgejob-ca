@@ -24,6 +24,7 @@ import { formatArrangement, formatFunding, unavailable } from "@/lib/seed";
 import { roleForCompany, useStore } from "@/lib/store";
 import type { Company, RadarData } from "@/lib/types";
 import { FavoriteButton } from "./AuthModal";
+import { resolveCompanyFreshness } from "@/lib/freshness";
 
 function LinkedInIcon({ className }: { className?: string }) {
   return (
@@ -133,7 +134,11 @@ export function CompanyCard({ company }: { company: Company }) {
   const selected = selectedCompanyIds.includes(company.id);
   const stale = role?.status === "stale";
   const title = role?.title ?? company.name;
-  const freshness = role?.freshnessLabel ?? company.fundedRelative ?? "Active";
+  const { freshnessLabel } = resolveCompanyFreshness(company);
+  const freshness =
+    freshnessLabel !== "Not available"
+      ? freshnessLabel
+      : role?.freshnessLabel ?? company.fundedRelative ?? "Active Hiring Signal";
   const radar = resolveRadarScores(company);
   const surge = company.surgeIndex ?? surgeFromRadarScores(radar);
   const rolesSummary = openRolesSummary(company);

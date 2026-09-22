@@ -13,8 +13,10 @@ import {
 } from "recharts";
 import { calculateRadarScores, surgeFromRadarScores } from "@/lib/calculateRadarScores";
 import { getCompanyActionUrls, getLinkedInPeopleUrl } from "@/lib/companyUrls";
+import { resolveRoleApplyUrl } from "@/lib/jobUrlSafety";
 import { getScoreReason, type RadarDimension } from "@/lib/getScoreReason";
 import { formatArrangement, formatFunding, unavailable } from "@/lib/seed";
+import { resolveCompanyFreshness } from "@/lib/freshness";
 import { getCompany, useStore } from "@/lib/store";
 import type { RadarData, WorkArrangement } from "@/lib/types";
 
@@ -59,6 +61,9 @@ export function CompanyDetailModal() {
   const peerRoles = company?.peerRoles ?? [];
   const rolesCount = peerRoles.length || company?.openRoleCount || 0;
   const actionUrls = company ? getCompanyActionUrls(company) : null;
+  const freshnessLabel = company
+    ? resolveCompanyFreshness(company).freshnessLabel
+    : "Not available";
   const radar = company
     ? { ...FALLBACK_RADAR, ...calculateRadarScores(company) }
     : FALLBACK_RADAR;
@@ -242,10 +247,13 @@ export function CompanyDetailModal() {
                   <div className="space-y-3">
                     {peerRoles.length > 0 ? (
                       peerRoles.map((job) => {
-                        const href = job.url || "#";
+                        const href =
+                          resolveRoleApplyUrl(job.url, actionUrls.careersUrl) ||
+                          actionUrls.careersUrl ||
+                          actionUrls.linkedInJobsUrl;
                         return (
                           <div
-                            key={`${job.title}-${job.url}`}
+                            key={`${job.title}-${job.url || "careers"}`}
                             className="rounded-r-xl border border-slate-200 border-l-4 border-l-emerald-500 bg-slate-50 p-4"
                           >
                             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -258,6 +266,14 @@ export function CompanyDetailModal() {
                                   <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">
                                     {employmentTypeLabel(company.workArrangement)}
                                   </span>
+                                  {job.postedAt ? (
+                                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                                      {resolveCompanyFreshness({
+                                        freshness: job.postedAt,
+                                        openRoleCount: 1,
+                                      }).freshnessLabel.replace(/^Updated /, "Posted ")}
+                                    </span>
+                                  ) : null}
                                 </div>
                                 <a
                                   href={getLinkedInPeopleUrl(company.name, job.title)}
@@ -274,8 +290,10 @@ export function CompanyDetailModal() {
                                 rel="noopener noreferrer"
                                 className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-700"
                               >
-                                Apply
-                                <ExternalLink className="h-3 w-3" />
+                                {job.url && resolveRoleApplyUrl(job.url, null)
+                                  ? "Apply"
+                                  : "Careers"}
+                                <ExternalLink className="h-3.5 w-3.5" />
                               </a>
                             </div>
                           </div>
@@ -310,9 +328,7 @@ export function CompanyDetailModal() {
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <dt className="text-slate-500">Freshness</dt>
-                        <dd className="font-semibold text-slate-900">
-                          {unavailable(company.fundedRelative)}
-                        </dd>
+                        <dd className="font-semibold text-slate-900">{freshnessLabel}</dd>
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <dt className="text-slate-500">Funded</dt>

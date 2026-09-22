@@ -5,6 +5,13 @@ import type {
   RadarData,
   WorkArrangement,
 } from "./types";
+import { sanitizeRoleLocation } from "./roleLocation";
+import {
+  aggregateLatestPostedAt,
+  formatFreshnessLabel,
+  toIsoDate,
+} from "./freshness";
+import { resolveRoleApplyUrl } from "./jobUrlSafety";
 
 function asString(value: unknown, fallback = "") {
   if (value === null || value === undefined) return fallback;
@@ -98,10 +105,15 @@ function parsePeerRoles(value: unknown): PeerRole[] {
       if (!item || typeof item !== "object") return null;
       const row = item as Record<string, unknown>;
       const title = asString(row.title).trim();
-      const location = asString(row.location, "Canada").trim() || "Canada";
-      const url = asString(row.url ?? row.apply_url ?? row.applyUrl).trim();
-      if (!title || !url) return null;
-      return { title, location, url };
+      const location = sanitizeRoleLocation(asString(row.location, "Remote (Canada)"));
+      const rawUrl = asNullableString(row.url ?? row.apply_url ?? row.applyUrl ?? row.job_url);
+      const url = resolveRoleApplyUrl(rawUrl, null);
+      const postedAt = toIsoDate(
+        asNullableString(row.postedAt ?? row.posted_at ?? row.posted_date ?? row.postedDate),
+      );
+      if (!title) return null;
+      // Drop roles that only had contaminated URLs and no title context — keep title with null url.
+      return { title, location, url, postedAt };
     })
     .filter((role): role is PeerRole => role !== null);
 }
@@ -133,10 +145,12 @@ export function mapCompanyRow(row: Record<string, unknown>): Company | null {
   );
   const hqCity = asNullableString(row.hq_city ?? row.hqCity);
   const locationRegion = asNullableString(row.location_region ?? row.locationRegion);
-  const location = asString(
-    row.location ??
-      (hqCity && locationRegion ? `${hqCity} · ${locationRegion}` : hqCity || locationRegion),
-    "Canada",
+  const location = sanitizeRoleLocation(
+    asString(
+      row.location ??
+        (hqCity && locationRegion ? `${hqCity}, ${locationRegion}` : hqCity || locationRegion),
+      "Remote (Canada)",
+    ),
   );
   const fundingRaw = asString(
     row.fundingRound ?? row.funding_round ?? row.funding_stage ?? row.funding ?? row.round,
@@ -166,6 +180,23 @@ export function mapCompanyRow(row: Record<string, unknown>): Company | null {
         ? true
         : true;
 
+  const peerRoles = parsePeerRoles(row.peerRoles ?? row.peer_roles);
+  const openRoleCount = asNumber(row.openRoleCount ?? row.open_role_count) ?? 0;
+  const freshnessFromRow = toIsoDate(
+    asNullableString(row.freshness ?? row.freshness_date ?? row.freshnessDate),
+  );
+  const freshnessFromRoles = aggregateLatestPostedAt(peerRoles);
+  const freshness =
+    freshnessFromRow && freshnessFromRoles
+      ? freshnessFromRow > freshnessFromRoles
+        ? freshnessFromRow
+        : freshnessFromRoles
+      : freshnessFromRow || freshnessFromRoles;
+  const freshnessLabel = formatFreshnessLabel(freshness, {
+    openRoleCount,
+    hasPeerRoles: peerRoles.length > 0,
+  });
+
   return {
     id,
     name,
@@ -187,7 +218,7 @@ export function mapCompanyRow(row: Record<string, unknown>): Company | null {
     locationRegion,
     workArrangement: arrangement(row.workArrangement ?? row.work_arrangement),
     glassdoorRating: asNumber(row.glassdoorRating ?? row.glassdoor_rating),
-    openRoleCount: asNumber(row.openRoleCount ?? row.open_role_count) ?? 0,
+    openRoleCount,
     evidenceCompleteness: completeness(row.evidenceCompleteness ?? row.evidence_completeness),
     radarData,
     surgeIndex,
@@ -196,7 +227,9 @@ export function mapCompanyRow(row: Record<string, unknown>): Company | null {
     applyUrl: asNullableString(row.applyUrl ?? row.apply_url),
     websiteUrl: asUrl(row.websiteUrl ?? row.website_url ?? row.website ?? row.domain),
     hiringSignal: asNullableString(row.hiringSignal ?? row.hiring_signal),
-    peerRoles: parsePeerRoles(row.peerRoles ?? row.peer_roles),
+    peerRoles,
+    freshness,
+    freshnessLabel,
   };
 }
 

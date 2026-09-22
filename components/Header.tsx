@@ -1,6 +1,6 @@
 "use client";
 
-import { Bookmark, GitCompare, Heart, ShieldCheck } from "lucide-react";
+import { Bookmark, GitCompare, ShieldCheck } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { Logo } from "./Logo";
 
@@ -10,7 +10,6 @@ export function Header() {
     setView,
     selectedCompanyIds,
     compareEnabled,
-    saved,
     favoriteCompanyIds,
     user,
     openAuth,
@@ -61,13 +60,11 @@ export function Header() {
                 ? "bg-slate-900 text-white"
                 : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
             }`}
-            aria-label={`Saved applications ${saved.length}, favorites ${favoriteCompanyIds.length}`}
+            aria-label={`Saved ${favoriteCompanyIds.length}`}
           >
             <Bookmark className="h-4 w-4" />
             <span className="hidden sm:inline">Saved</span>
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 text-xs text-slate-700">
-              {saved.length}
-              <Heart className="h-3 w-3 fill-rose-500 text-rose-500" />
               {favoriteCompanyIds.length}
             </span>
           </button>

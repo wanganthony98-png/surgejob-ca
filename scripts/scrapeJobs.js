@@ -36,10 +36,37 @@ const ANCHOR_COMPANIES = [
   "Taalas",
 ];
 
+/** Non-startup global giants — never scrape or upsert. */
+const GLOBAL_GIANTS_BLACKLIST = [
+  "Nvidia",
+  "NVIDIA",
+  "Microsoft",
+  "Google",
+  "Amazon",
+  "Meta",
+  "Apple",
+  "Alphabet",
+  "OpenAI",
+  "IBM",
+  "Oracle",
+  "Salesforce",
+  "Intel",
+];
+
 const ANCHOR_COMPANY_SET = new Set(ANCHOR_COMPANIES.map((n) => n.toLowerCase()));
+const GLOBAL_GIANTS_SET = new Set(GLOBAL_GIANTS_BLACKLIST.map((n) => n.toLowerCase()));
 
 function isAnchorCompany(name) {
   return ANCHOR_COMPANY_SET.has(String(name || "").trim().toLowerCase());
+}
+
+function isBlacklistedGiant(name) {
+  const key = String(name || "").trim().toLowerCase();
+  if (!key) return false;
+  if (GLOBAL_GIANTS_SET.has(key)) return true;
+  return [...GLOBAL_GIANTS_SET].some(
+    (giant) => key === giant || key.startsWith(`${giant} `) || key.includes(` ${giant}`),
+  );
 }
 
 const LINKEDIN_COMPANY_MAP = {
@@ -353,7 +380,8 @@ const EXTRACTION_SCHEMA = {
     },
     funding_date: {
       type: ["string", "null"],
-      description: "Funding date in YYYY-MM-DD format.",
+      description:
+        "Funding/event date as YYYY-MM-DD. Convert relative phrases (e.g. '2 days ago', 'last week') to an exact ISO date using today as anchor. Never return relative text.",
     },
     funding_stage: {
       type: ["string", "null"],
@@ -385,6 +413,25 @@ const EXTRACTION_SCHEMA = {
       type: "string",
       description: 'Prominent VC firm, or "Undisclosed" if not mentioned. Never "Unknown".',
     },
+    open_roles: {
+      type: "array",
+      description:
+        "Roles ONLY when the article explicitly lists them with a real apply URL in the text. Prefer empty array.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" },
+          location: { type: ["string", "null"] },
+          job_url: {
+            type: ["string", "null"],
+            description:
+              "Copy the exact URL from the source if present. NEVER invent, guess, or generate LinkedIn/job URLs. null when absent.",
+          },
+        },
+        required: ["title", "location", "job_url"],
+      },
+    },
     radar_data: {
       type: "object",
       additionalProperties: false,
@@ -410,6 +457,7 @@ const EXTRACTION_SCHEMA = {
     "location_region",
     "tagline",
     "lead_investor",
+    "open_roles",
     "radar_data",
   ],
 };
@@ -431,10 +479,29 @@ CRITICAL — name field (entity resolution):
 CRITICAL — reject general industry / non-company news:
 - Set is_valid_funding_news=false and name=null unless the article is a SPECIFIC company fundraising or hiring announcement.
 - Discard examples: "Canada has problems…", "Sluggish growth, lost value…", "Startup Funding Q1…", market roundups, opinion/analysis with no single named company raise.
+- NEVER extract global giants: ${GLOBAL_GIANTS_BLACKLIST.join(", ")}. Set is_valid_funding_news=false for these.
+
+Role / job location formatting (when describing HQ or roles):
+- Canadian cities MUST be "City, Province Code" (e.g. "Toronto, ON", "Vancouver, BC", "Montreal, QC").
+- Remote MUST be "Remote" or "Remote (Canada)".
+- FORBIDDEN: "Ontario", "Canada", "Greater Toronto Area", "GTA", or province names alone.
+
+open_roles (STRICT — usually empty for funding news):
+- Only include a role when the article/HTML EXPLICITLY lists that job for THIS company.
+- job_url: copy the exact URL from the source text/HTML for that role. If no URL is present, set job_url=null.
+- NEVER invent, guess, hallucinate, or reuse example LinkedIn URLs (including any Tim Hortons / restaurant / unrelated employer links).
+- Prefer returning open_roles=[] unless the source clearly enumerates roles with URLs.
 
 Funding (extract from the article text — do NOT invent or default):
 - funding_amount: exact figure when present (e.g. "$1B", "$169M CAD"). null if absent.
 - funding_stage: exact round when present (e.g. "Series B", "Growth", "Series A"). null if absent. Never invent "Seed".
+- funding_date: ALWAYS return strict YYYY-MM-DD when any date signal exists.
+  Convert relative timestamps using TODAY as the anchor (current UTC date):
+  "posted 2 days ago" / "raised 2 days ago" → today minus 2 days
+  "last week" → today minus 7 days
+  "yesterday" → today minus 1 day
+  "this morning" / "just now" / "today" → today's date
+  Never leave a relative phrase in funding_date — only ISO dates or null.
 
 Industry (pick ONE best fit from ${INDUSTRIES.join(" | ")}):
 - Prefer specific tags: Autonomous Driving, Semiconductors, Robotics, CleanTech, Telecom & Infra, AgTech, FoodTech, AI & Data, HealthTech.
@@ -1130,6 +1197,7 @@ async function extractWithOpenAI(openai, item) {
   }
 
   console.log(`[LLM Processing] Querying model: ${LLM_MODEL}...`);
+  const todayIso = new Date().toISOString().slice(0, 10);
   const response = await openai.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0,
@@ -1143,7 +1211,16 @@ async function extractWithOpenAI(openai, item) {
     },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: JSON.stringify({ title, snippet }) },
+      {
+        role: "user",
+        content: JSON.stringify({
+          title,
+          snippet,
+          today_utc: todayIso,
+          instruction:
+            "Convert any relative dates (e.g. 'posted 2 days ago') to YYYY-MM-DD using today_utc as the anchor.",
+        }),
+      },
     ],
   });
 
@@ -1172,6 +1249,10 @@ function toCompanyRow(extracted, sourceItem) {
 
   const name = toTitleCaseName(cleaned);
   if (name.length < 3) return null;
+  if (isBlacklistedGiant(name)) {
+    console.log(`[Blacklist] Skipping global giant: ${name}`);
+    return null;
+  }
 
   const tagline =
     cleanTagline(extracted.tagline) ||
@@ -1180,6 +1261,9 @@ function toCompanyRow(extracted, sourceItem) {
   const hq_city = extracted.hq_city ? String(extracted.hq_city).trim() : null;
   const location_region = normalizeRegion(extracted.location_region, hq_city);
   const industry = normalizeIndustry(extracted.industry, tagline, name, articleText);
+  const location = sanitizeRoleLocation(
+    hq_city ? `${hq_city}, ${location_region}` : location_region,
+  );
 
   const funding_round =
     normalizeFundingStage(extracted.funding_stage) ||
@@ -1189,6 +1273,23 @@ function toCompanyRow(extracted, sourceItem) {
     normalizeFundingAmount(extracted.funding_amount) ||
     parseFundingAmountFromText(articleText) ||
     null;
+
+  const careersGuess = null;
+  const openRolesFromLlm = Array.isArray(extracted.open_roles)
+    ? extracted.open_roles
+        .map((role) => {
+          const title = String(role?.title || "").trim();
+          if (!title) return null;
+          const jobUrl = resolveRoleApplyUrl(role?.job_url, careersGuess);
+          return {
+            title,
+            location: sanitizeRoleLocation(role?.location),
+            url: jobUrl,
+            posted_at: null,
+          };
+        })
+        .filter(Boolean)
+    : [];
 
   const row = {
     name,
@@ -1200,11 +1301,12 @@ function toCompanyRow(extracted, sourceItem) {
     industry,
     hq_city,
     location_region,
-    location: hq_city ? `${hq_city}, ${location_region}` : location_region,
+    location,
     lead_investor: normalizeLeadInvestor(extracted.lead_investor),
-    peer_roles: [],
-    open_role_count: 0,
+    peer_roles: openRolesFromLlm,
+    open_role_count: openRolesFromLlm.length,
     linkedin_url: getLinkedInUrl(name),
+    freshness: aggregateCompanyFreshness(openRolesFromLlm),
   };
   const radar_data = calculateRadarScores(row);
   const withRadar = {
@@ -1291,12 +1393,123 @@ function parseJobPostedDate(raw) {
   return null;
 }
 
+/**
+ * Sanitize job/HQ location → "City, XX" or "Remote" / "Remote (Canada)".
+ * Converts vague strings (Ontario, GTA, Canada) into filter-safe values.
+ */
+function sanitizeRoleLocation(raw) {
+  if (!raw) return "Remote (Canada)";
+  let text = String(raw).replace(/\s+/g, " ").trim();
+  if (!text) return "Remote (Canada)";
+
+  const PROVINCE_CODES = {
+    ontario: "ON",
+    on: "ON",
+    quebec: "QC",
+    qc: "QC",
+    "british columbia": "BC",
+    bc: "BC",
+    alberta: "AB",
+    ab: "AB",
+    manitoba: "MB",
+    mb: "MB",
+    saskatchewan: "SK",
+    sk: "SK",
+    "nova scotia": "NS",
+    ns: "NS",
+    "new brunswick": "NB",
+    nb: "NB",
+    "newfoundland and labrador": "NL",
+    newfoundland: "NL",
+    nl: "NL",
+    "prince edward island": "PE",
+    pei: "PE",
+    pe: "PE",
+  };
+  const CITY_DEFAULTS = {
+    toronto: "Toronto, ON",
+    mississauga: "Mississauga, ON",
+    ottawa: "Ottawa, ON",
+    waterloo: "Waterloo, ON",
+    kitchener: "Kitchener, ON",
+    montreal: "Montreal, QC",
+    montréal: "Montreal, QC",
+    vancouver: "Vancouver, BC",
+    calgary: "Calgary, AB",
+    edmonton: "Edmonton, AB",
+  };
+  const REGION_TO_CITY = {
+    gta: "Toronto, ON",
+    "greater toronto": "Toronto, ON",
+    "greater toronto area": "Toronto, ON",
+    "sw ontario": "Waterloo, ON",
+    "greater vancouver": "Vancouver, BC",
+    "montreal area": "Montreal, QC",
+    "ottawa region": "Ottawa, ON",
+  };
+
+  if (/^remote(\s*\(?\s*canada\s*\)?)?$/i.test(text) || /^canada(\s*only)?$/i.test(text)) {
+    return "Remote (Canada)";
+  }
+  if (/remote/i.test(text) && /canada/i.test(text)) return "Remote (Canada)";
+  if (/^remote\b/i.test(text)) return "Remote";
+
+  const lower = text.toLowerCase().replace(/,/g, " ").replace(/\s+/g, " ").trim();
+  if (REGION_TO_CITY[lower]) return REGION_TO_CITY[lower];
+  if (CITY_DEFAULTS[lower]) return CITY_DEFAULTS[lower];
+  if (PROVINCE_CODES[lower]) return PROVINCE_CODES[lower];
+
+  const cityProv =
+    text.match(/^([A-Za-zÀ-ÿ .'-]+?)\s*,\s*([A-Za-z .]+)$/) ||
+    text.match(
+      /^([A-Za-zÀ-ÿ .'-]+?)\s+(Ontario|Quebec|British Columbia|Alberta|Manitoba|Saskatchewan|ON|QC|BC|AB|MB|SK)\s*$/i,
+    );
+  if (cityProv) {
+    const cityRaw = cityProv[1].trim();
+    const provRaw = cityProv[2].trim().toLowerCase();
+    const code =
+      PROVINCE_CODES[provRaw] || (/^[a-z]{2}$/i.test(provRaw) ? provRaw.toUpperCase() : null);
+    const cityKey = cityRaw.toLowerCase();
+    if (CITY_DEFAULTS[cityKey]) return CITY_DEFAULTS[cityKey];
+    if (code) {
+      const titled = cityRaw
+        .split(/\s+/)
+        .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+        .join(" ");
+      return `${titled}, ${code}`;
+    }
+  }
+
+  for (const [city, formatted] of Object.entries(CITY_DEFAULTS)) {
+    if (lower.includes(city)) return formatted;
+  }
+  for (const [region, formatted] of Object.entries(REGION_TO_CITY)) {
+    if (lower.includes(region)) return formatted;
+  }
+
+  text = text.replace(/,?\s*canada\s*$/i, "").trim();
+  if (!text) return "Remote (Canada)";
+  if (/^(ontario|quebec|british columbia|alberta|canada|gta)$/i.test(text)) {
+    return PROVINCE_CODES[text.toLowerCase()] || "Remote (Canada)";
+  }
+  return text;
+}
+
 function normalizeLinkedInJob(item) {
   const title = String(item.title || item.jobTitle || item.position || "").trim();
-  const location = String(
-    item.location || item.jobLocation || item.formattedLocation || item.place || "Canada",
+  const location = sanitizeRoleLocation(
+    item.location || item.jobLocation || item.formattedLocation || item.place || "Remote (Canada)",
+  );
+  const company = String(
+    item.companyName ||
+      item.company ||
+      item.company_name ||
+      item.employer ||
+      item.organization ||
+      item.hiringCompany ||
+      "",
   ).trim();
-  const apply_url = String(
+  const rawUrl = String(
     item.applyUrl ||
       item.apply_url ||
       item.jobUrl ||
@@ -1305,6 +1518,8 @@ function normalizeLinkedInJob(item) {
       item.externalApplyUrl ||
       "",
   ).trim();
+  // Never invent / keep contaminated URLs (e.g. Tim Hortons Restaurant Manager).
+  const apply_url = isUsableJobUrl(rawUrl) ? rawUrl : null;
   const posted_date = parseJobPostedDate(
     item.postedAt ||
       item.posted_date ||
@@ -1315,8 +1530,8 @@ function normalizeLinkedInJob(item) {
       item.postedTime ||
       item.postedAgo,
   );
-  if (!title || !apply_url) return null;
-  return { title, location, posted_date, apply_url };
+  if (!title) return null;
+  return { title, location, posted_date, apply_url, company };
 }
 
 function isFreshJob(job) {
@@ -1330,12 +1545,70 @@ function hiringSignalFromCount(count) {
   return `High Growth: ${count}+ Open Roles`;
 }
 
-function peerRolesFromJobs(jobs) {
-  return jobs.slice(0, 15).map((job) => ({
-    title: job.title,
-    location: job.location,
-    url: job.apply_url,
-  }));
+/** Contaminated / example URLs that must never be stored as role apply links. */
+const CONTAMINATED_JOB_URL_RE =
+  /tim[-_]?hortons|mcdonald'?s|starbucks|walmart|loblaw|subway\.com|burger.?king|restaurant[-_]?manager|indeed\.com\/cmp\/tim/i;
+const EXAMPLE_JOB_URL_RE =
+  /linkedin\.com\/jobs\/view\/(northstar|kitepath|harbourgrid|maplestack)|example\.com|placeholder|javascript:void/i;
+
+function isContaminatedJobUrl(url) {
+  if (!url) return false;
+  const text = String(url);
+  return CONTAMINATED_JOB_URL_RE.test(text) || EXAMPLE_JOB_URL_RE.test(text);
+}
+
+function isUsableJobUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return false;
+  if (!/^https?:\/\//i.test(raw)) return false;
+  if (isContaminatedJobUrl(raw)) return false;
+  return true;
+}
+
+function resolveRoleApplyUrl(rawUrl, careersUrl) {
+  if (isUsableJobUrl(rawUrl)) return String(rawUrl).trim();
+  if (isUsableJobUrl(careersUrl)) return String(careersUrl).trim();
+  return null;
+}
+
+function jobBelongsToCompany(job, companyName) {
+  const brand = String(companyName || "").trim().toLowerCase();
+  if (!brand) return false;
+  const url = String(job.apply_url || job.url || "");
+  if (isContaminatedJobUrl(url)) return false;
+
+  const listedCompany = String(job.company || "").trim().toLowerCase();
+  if (listedCompany) {
+    if (listedCompany.includes(brand) || brand.includes(listedCompany)) return true;
+    const tokens = brand.split(/\s+/).filter((t) => t.length > 2);
+    if (tokens.length && tokens.every((t) => listedCompany.includes(t))) return true;
+    return false;
+  }
+  return isUsableJobUrl(url) || !url;
+}
+
+function peerRolesFromJobs(jobs, careersUrl) {
+  return jobs.slice(0, 15).map((job) => {
+    const url = resolveRoleApplyUrl(job.apply_url, careersUrl);
+    return {
+      title: job.title,
+      location: sanitizeRoleLocation(job.location),
+      url, // may be null — UI should fall back to company careers
+      posted_at: job.posted_date || null,
+    };
+  });
+}
+
+/** Latest posted_at across peer/open roles → company.freshness (YYYY-MM-DD). */
+function aggregateCompanyFreshness(peerRoles) {
+  if (!Array.isArray(peerRoles) || peerRoles.length === 0) return null;
+  let latest = null;
+  for (const role of peerRoles) {
+    const date = parseJobPostedDate(role.posted_at || role.postedAt || role.posted_date);
+    if (!date) continue;
+    if (!latest || date > latest) latest = date;
+  }
+  return latest;
 }
 
 async function fetchLinkedInJobsForCompany(client, companyName) {
@@ -1409,7 +1682,14 @@ async function fetchLinkedInJobsForCompany(client, companyName) {
       const jobs = (items || [])
         .map(normalizeLinkedInJob)
         .filter(Boolean)
-        .filter(isFreshJob);
+        .filter(isFreshJob)
+        .filter((job) => jobBelongsToCompany(job, cleanName));
+      const dropped = (items || []).length - jobs.length;
+      if (dropped > 0) {
+        console.log(
+          `[LinkedIn] ${cleanName}: dropped ${dropped} unrelated/contaminated listings (e.g. wrong employer URLs).`,
+        );
+      }
       console.log(`[LinkedIn] ${cleanName}: ${jobs.length} fresh jobs (<= ${JOB_FRESHNESS_DAYS}d).`);
       return jobs;
     } catch (error) {
@@ -1454,13 +1734,21 @@ async function enrichOneCompany(client, company) {
   }
 
   const hiring_signal = hiringSignalFromCount(jobs.length);
-  const peer_roles = peerRolesFromJobs(jobs);
+  const careersFallback =
+    candidateCareers && !/linkedin\.com\/jobs\/view/i.test(String(candidateCareers))
+      ? candidateCareers
+      : meta.careers_url || null;
+  const peer_roles = peerRolesFromJobs(jobs, careersFallback);
+  const freshness = aggregateCompanyFreshness(peer_roles);
   const apply_url =
     (candidateCareers && looksLikeAtsCareersUrl(candidateCareers) ? candidateCareers : null) ||
     candidateCareers ||
-    getLinkedInUrl(brandName);
+    null;
   if (candidateCareers && looksLikeAtsCareersUrl(candidateCareers)) {
     console.log(`[ATS] ${brandName}: careers board detected → ${apply_url}`);
+  }
+  if (freshness) {
+    console.log(`[Freshness] ${brandName}: latest role posted_at → ${freshness}`);
   }
 
   const enrichedRow = withRequiredLinkedInUrl({
@@ -1471,6 +1759,7 @@ async function enrichOneCompany(client, company) {
     hiring_signal,
     peer_roles,
     open_role_count: jobs.length,
+    freshness,
   });
   const radar_data = calculateRadarScores(enrichedRow);
   const withRadar = {
@@ -1889,11 +2178,114 @@ async function mergeAnchorCompaniesForUpsert(supabase, cleanCompanies) {
   return [...byName.values()];
 }
 
+async function scrubContaminatedPeerRoleUrls(supabase) {
+  const { data, error } = await supabase.from("companies").select("id,name,apply_url,peer_roles");
+  if (error) {
+    console.warn("[URL scrub] Could not list companies:", error.message || error);
+    return 0;
+  }
+  let updated = 0;
+  for (const row of data || []) {
+    if (!Array.isArray(row.peer_roles) || row.peer_roles.length === 0) {
+      if (isContaminatedJobUrl(row.apply_url)) {
+        await supabase.from("companies").update({ apply_url: null }).eq("id", row.id);
+        updated += 1;
+      }
+      continue;
+    }
+    const careers =
+      row.apply_url && !isContaminatedJobUrl(row.apply_url) ? row.apply_url : null;
+    let changed = false;
+    const nextRoles = row.peer_roles.map((role) => {
+      const url = role?.url || role?.apply_url || role?.job_url;
+      if (!isContaminatedJobUrl(url) && isUsableJobUrl(url)) return role;
+      if (!url && !role?.url) return role;
+      if (isContaminatedJobUrl(url) || (url && !isUsableJobUrl(url))) {
+        changed = true;
+        return { ...role, url: careers || null };
+      }
+      return role;
+    });
+    const patch = {};
+    if (changed) patch.peer_roles = nextRoles;
+    if (isContaminatedJobUrl(row.apply_url)) patch.apply_url = null;
+    if (!Object.keys(patch).length) continue;
+    const { error: updError } = await supabase.from("companies").update(patch).eq("id", row.id);
+    if (!updError) {
+      updated += 1;
+      console.log(`[URL scrub] Cleaned contaminated role URLs for ${row.name}`);
+    }
+  }
+  if (updated === 0) console.log("[URL scrub] No contaminated role URLs found.");
+  return updated;
+}
+
 /**
- * Delete stale garbage entities (name length < 3 or headline-shaped names)
- * that are not in the freshly ingested keep-set.
- * Anchor companies are NEVER wiped.
+ * Delete blacklisted global giants (e.g. Nvidia) and any associated role-shaped JSON.
  */
+async function deleteBlacklistedGiants(supabase) {
+  const names = [...new Set(GLOBAL_GIANTS_BLACKLIST)];
+  console.log(`[Blacklist] Removing giants from Supabase: ${names.join(", ")}`);
+
+  const { data: existing, error: listError } = await supabase
+    .from("companies")
+    .select("id,name")
+    .in("name", names);
+  if (listError) {
+    // Case-insensitive fallback: fetch all names and filter locally.
+    const all = await supabase.from("companies").select("id,name");
+    if (all.error) {
+      console.warn("[Blacklist] Could not list companies:", all.error.message || all.error);
+      return 0;
+    }
+    const matched = (all.data || []).filter((row) => isBlacklistedGiant(row.name));
+    if (!matched.length) {
+      console.log("[Blacklist] No blacklisted rows found.");
+      return 0;
+    }
+    const ids = matched.map((r) => r.id).filter(Boolean);
+    const matchedNames = matched.map((r) => r.name);
+    if (ids.length) {
+      await supabase.from("companies").delete().in("id", ids);
+    } else {
+      await supabase.from("companies").delete().in("name", matchedNames);
+    }
+    // Best-effort: clear related saved-job style tables if present.
+    for (const table of ["roles", "company_roles", "open_roles", "user_saved_jobs"]) {
+      const del = await supabase.from(table).delete().in("company_name", matchedNames);
+      if (del.error) {
+        await supabase.from(table).delete().in("company_id", ids);
+      }
+    }
+    console.log(`[Blacklist] Deleted ${matched.length} giant row(s): ${matchedNames.join(", ")}`);
+    return matched.length;
+  }
+
+  const rows = existing || [];
+  // Also catch case variants not in exact .in() list
+  const all = await supabase.from("companies").select("id,name");
+  const extra = (all.data || []).filter(
+    (row) => isBlacklistedGiant(row.name) && !rows.some((r) => r.id === row.id),
+  );
+  const toDelete = [...rows, ...extra];
+  if (!toDelete.length) {
+    console.log("[Blacklist] No blacklisted rows found.");
+    return 0;
+  }
+
+  const ids = toDelete.map((r) => r.id).filter(Boolean);
+  const matchedNames = toDelete.map((r) => r.name);
+  if (ids.length) {
+    const { error } = await supabase.from("companies").delete().in("id", ids);
+    if (error) {
+      await supabase.from("companies").delete().in("name", matchedNames);
+    }
+  } else {
+    await supabase.from("companies").delete().in("name", matchedNames);
+  }
+  console.log(`[Blacklist] Deleted ${toDelete.length} giant row(s): ${matchedNames.join(", ")}`);
+  return toDelete.length;
+}
 async function wipeStaleGarbageEntities(supabase, keepCompanies) {
   const keep = new Set(
     (keepCompanies || []).map((row) => String(row.name || "").trim().toLowerCase()).filter(Boolean),
@@ -2007,6 +2399,14 @@ async function main() {
   const supabase = createClient(cleanedUrl, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+
+  // Remove Nvidia / global giants immediately (never keep in DB).
+  await deleteBlacklistedGiants(supabase);
+
+  // Scrub Tim Hortons / contaminated role URLs from peer_roles before upsert overwrite.
+  await scrubContaminatedPeerRoleUrls(supabase);
+
+  cleanCompanies = cleanCompanies.filter((row) => !isBlacklistedGiant(row.name));
 
   // Anchor protection: always re-include Cohere/Waabi/TransCrypts/Haply/Simuhealth/Taalas.
   cleanCompanies = await mergeAnchorCompaniesForUpsert(supabase, cleanCompanies);

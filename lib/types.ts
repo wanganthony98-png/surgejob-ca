@@ -15,7 +15,9 @@ export type RadarData = {
 export type PeerRole = {
   title: string;
   location: string;
-  url: string;
+  /** Explicit apply URL, or null → UI should use company careers page. */
+  url: string | null;
+  postedAt?: string | null;
 };
 
 export type Company = {
@@ -47,6 +49,9 @@ export type Company = {
   websiteUrl?: string | null;
   hiringSignal?: string | null;
   peerRoles?: PeerRole[] | null;
+  /** Latest open-role posted_at (YYYY-MM-DD). */
+  freshness?: string | null;
+  freshnessLabel?: string | null;
 };
 
 export type Role = {

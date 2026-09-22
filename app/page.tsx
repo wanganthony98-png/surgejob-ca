@@ -11,7 +11,7 @@ type CompanyRow = Record<string, unknown>;
 
 /**
  * 3-tier homepage: Cover → Level 1 board → Level 2 insight modal.
- * Loads all non-garbage companies from Supabase (active + valid profiles).
+ * UI only shows companies with at least one open role (DB keeps zero-role rows for scrapes).
  */
 function looksLikeGarbageName(name: unknown) {
   const text = String(name || "").trim();
@@ -25,26 +25,25 @@ function looksLikeGarbageName(name: unknown) {
   return false;
 }
 
+function hasOpenRoles(row: CompanyRow) {
+  const count = Number(row.open_role_count ?? row.openRoleCount ?? 0);
+  if (Number.isFinite(count) && count > 0) return true;
+  const peers = row.peer_roles ?? row.peerRoles ?? row.open_roles ?? row.openRoles;
+  return Array.isArray(peers) && peers.length > 0;
+}
+
 function hasValidProfile(row: CompanyRow) {
   const name = String(row.name || "").trim();
   if (!name || looksLikeGarbageName(name)) return false;
-  // Keep active rows and any row with usable profile fields.
-  if (row.is_active === true || row.isActive === true) return true;
-  if (row.tagline || row.mission || row.industry) return true;
-  if (row.funding_round || row.fundingRound || row.funding_amount || row.fundingAmount) {
-    return true;
-  }
-  if (Number(row.open_role_count ?? row.openRoleCount ?? 0) > 0) return true;
-  if (row.linkedin_url || row.linkedinUrl || row.apply_url || row.applyUrl) return true;
-  return Boolean(name);
+  return hasOpenRoles(row);
 }
 
 function sortCompanies(companies: Company[]) {
   return [...companies].sort((a, b) => {
-    const activeDelta = Number(Boolean(b.isActive)) - Number(Boolean(a.isActive));
-    if (activeDelta !== 0) return activeDelta;
     const rolesDelta = (b.openRoleCount || 0) - (a.openRoleCount || 0);
     if (rolesDelta !== 0) return rolesDelta;
+    const activeDelta = Number(Boolean(b.isActive)) - Number(Boolean(a.isActive));
+    if (activeDelta !== 0) return activeDelta;
     const aDate = a.fundingDate ? Date.parse(a.fundingDate) : 0;
     const bDate = b.fundingDate ? Date.parse(b.fundingDate) : 0;
     return (Number.isFinite(bDate) ? bDate : 0) - (Number.isFinite(aDate) ? aDate : 0);
@@ -52,7 +51,6 @@ function sortCompanies(companies: Company[]) {
 }
 
 async function fetchCompanyRows() {
-  // Prefer freshest sync first; fall back if updated_at is missing in schema.
   const primary = await supabase
     .from("companies")
     .select("*")
@@ -79,16 +77,23 @@ async function fetchCompanyRows() {
   return null;
 }
 
+function companiesWithOpenRoles(companies: Company[]) {
+  return companies.filter(
+    (c) => (c.openRoleCount || 0) > 0 || (c.peerRoles?.length || 0) > 0,
+  );
+}
+
 async function loadCompanies() {
   try {
     const rows = await fetchCompanyRows();
-    if (!rows) return mockData;
+    if (!rows) return companiesWithOpenRoles(mockData);
 
     const usable = rows.filter(hasValidProfile);
     const live = sortCompanies(mapCompanyRows(usable));
-    return live.length > 0 ? live : mockData;
+    const withRoles = companiesWithOpenRoles(live);
+    return withRoles.length > 0 ? withRoles : companiesWithOpenRoles(mockData);
   } catch {
-    return mockData;
+    return companiesWithOpenRoles(mockData);
   }
 }
 

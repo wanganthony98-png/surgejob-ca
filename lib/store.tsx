@@ -11,7 +11,6 @@ import {
 import {
   buildEvidenceSummary,
   companies as seedCompanies,
-  defaultSaved,
   getCompany,
   getRole,
   roleForCompany,
@@ -26,6 +25,15 @@ import {
   sizeMatches,
 } from "./filterMatch";
 import type { Company, Filters, SavedApplication, SavedStatus, View } from "./types";
+import {
+  fetchSavedCompanyIds,
+  fetchSessionUser,
+  removeSavedCompanyForUser,
+  saveCompanyForUser,
+  signOutSupabase,
+  type AuthUser,
+} from "./userSavedJobs";
+import { getSupabaseBrowser } from "./supabaseBrowser";
 
 const STORAGE_KEY = "surgejob-v2";
 
@@ -40,11 +48,8 @@ const defaultFilters: Filters = {
 
 type Persisted = {
   selectedCompanyIds: string[];
-  favoriteCompanyIds: string[];
-  saved: SavedApplication[];
-  fitNotes: Record<string, string>;
   filters: Filters;
-  user: { name: string; email: string } | null;
+  fitNotes: Record<string, string>;
 };
 
 type AuthMode = "login" | "signup" | null;
@@ -60,7 +65,7 @@ type Store = {
   saved: SavedApplication[];
   fitNotes: Record<string, string>;
   toast: string | null;
-  user: { name: string; email: string } | null;
+  user: AuthUser | null;
   authMode: AuthMode;
   setView: (view: View) => void;
   setFilters: (next: Partial<Filters> | Filters) => void;
@@ -87,14 +92,18 @@ type Store = {
 
 const StoreContext = createContext<Store | null>(null);
 
-function matchesFilters(companyId: string, filters: Filters) {
-  const company = getCompany(companyId);
-  if (!company) return false;
-  const role = roleForCompany(companyId);
+function companyRoleLocations(company: Company) {
+  return (company.peerRoles || []).map((r) => r.location).filter(Boolean);
+}
+
+function matchesFilters(company: Company, filters: Filters) {
+  const role = roleForCompany(company.id);
 
   if (!industryMatches(company.industry, filters.industry)) return false;
   if (!fundingMatches(company.fundingRound, filters.funding)) return false;
-  if (!locationMatches(company.location, filters.location)) return false;
+  if (!locationMatches(company.location, filters.location, companyRoleLocations(company))) {
+    return false;
+  }
   if (!sizeMatches(company.headcount, filters.size)) return false;
   if (filters.rating === "4.0+" && (company.glassdoorRating === null || company.glassdoorRating < 4)) {
     return false;
@@ -128,12 +137,10 @@ export function StoreProvider({
   const [selectedCompanyIds, setSelected] = useState<string[]>([]);
   const [favoriteCompanyIds, setFavorites] = useState<string[]>([]);
   const [expandedIds, setExpanded] = useState<string[]>([]);
-  const [saved, setSaved] = useState<SavedApplication[]>(defaultSaved);
-  const [fitNotes, setFitNotesState] = useState<Record<string, string>>({
-    "maplestack-designer": defaultSaved[0].fitNotes,
-  });
+  const [saved, setSaved] = useState<SavedApplication[]>([]);
+  const [fitNotes, setFitNotesState] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
-  const [user, setUser] = useState<{ name: string; email: string } | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>(null);
   const [detailCompanyId, setDetailCompanyId] = useState<string | null>(null);
 
@@ -143,16 +150,11 @@ export function StoreProvider({
       if (raw) {
         const parsed = JSON.parse(raw) as Persisted;
         setSelected(parsed.selectedCompanyIds ?? []);
-        setFavorites(parsed.favoriteCompanyIds ?? []);
-        setSaved(parsed.saved?.length ? parsed.saved : defaultSaved);
-        setFitNotesState(
-          parsed.fitNotes ?? { "maplestack-designer": defaultSaved[0].fitNotes },
-        );
+        setFitNotesState(parsed.fitNotes ?? {});
         setFiltersState({ ...defaultFilters, ...parsed.filters });
-        setUser(parsed.user ?? null);
       }
     } catch {
-      /* keep seeds */
+      /* ignore */
     }
     setReady(true);
     const timer = window.setTimeout(() => setLoading(false), 700);
@@ -163,14 +165,11 @@ export function StoreProvider({
     if (!ready) return;
     const payload: Persisted = {
       selectedCompanyIds,
-      favoriteCompanyIds,
-      saved,
       fitNotes,
       filters,
-      user,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [ready, selectedCompanyIds, favoriteCompanyIds, saved, fitNotes, filters, user]);
+  }, [ready, selectedCompanyIds, fitNotes, filters]);
 
   useEffect(() => {
     if (!toast) return;
@@ -178,14 +177,62 @@ export function StoreProvider({
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  // Bind session + saved companies to auth.users.id
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrateAuth() {
+      const sessionUser = await fetchSessionUser();
+      if (cancelled) return;
+      setUser(sessionUser);
+      if (sessionUser) {
+        const ids = await fetchSavedCompanyIds(sessionUser.id);
+        if (!cancelled) setFavorites(ids);
+      } else {
+        setFavorites([]);
+        setSaved([]);
+      }
+    }
+
+    hydrateAuth();
+
+    let unsubscribe: (() => void) | undefined;
+    try {
+      const supabase = getSupabaseBrowser();
+      const { data } = supabase.auth.onAuthStateChange(async (_event, session) => {
+        if (cancelled) return;
+        if (!session?.user) {
+          setUser(null);
+          setFavorites([]);
+          setSaved([]);
+          return;
+        }
+        const nextUser = await fetchSessionUser();
+        if (cancelled) return;
+        setUser(nextUser);
+        if (nextUser) {
+          const ids = await fetchSavedCompanyIds(nextUser.id);
+          if (!cancelled) setFavorites(ids);
+        }
+      });
+      unsubscribe = () => data.subscription.unsubscribe();
+    } catch {
+      /* missing anon key in some envs */
+    }
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
   const filteredCompanies = useMemo(
-    () => initialCompanies.filter((c) => matchesFilters(c.id, filters)),
+    () => initialCompanies.filter((c) => matchesFilters(c, filters)),
     [filters, initialCompanies],
   );
 
-  const compareEnabled = filteredCompanies.filter((c) =>
-    selectedCompanyIds.includes(c.id),
-  ).length >= 2;
+  const compareEnabled =
+    filteredCompanies.filter((c) => selectedCompanyIds.includes(c.id)).length >= 2;
 
   const setFilters = useCallback((next: Partial<Filters> | Filters) => {
     setFiltersState((prev) => ({ ...prev, ...next }));
@@ -205,24 +252,57 @@ export function StoreProvider({
     setSelected((prev) => prev.filter((id) => id !== companyId));
   }, []);
 
-  const toggleFavorite = useCallback((companyId: string) => {
-    setFavorites((prev) =>
-      prev.includes(companyId) ? prev.filter((id) => id !== companyId) : [...prev, companyId],
-    );
-  }, []);
-
   const openAuth = useCallback((mode: AuthMode) => {
     setAuthMode(mode);
   }, []);
 
+  const toggleFavorite = useCallback(
+    (companyId: string) => {
+      if (!user) {
+        setAuthMode("login");
+        setToast("Log in with Google to save companies.");
+        return;
+      }
+      const company = getCompany(companyId);
+      const isSaved = favoriteCompanyIds.includes(companyId);
+      setFavorites((prev) =>
+        isSaved ? prev.filter((id) => id !== companyId) : [...prev, companyId],
+      );
+      void (async () => {
+        try {
+          if (isSaved) {
+            await removeSavedCompanyForUser(user.id, companyId);
+            setToast("Removed from saved.");
+          } else {
+            await saveCompanyForUser(user.id, companyId, company?.name);
+            setToast("Saved to your account.");
+          }
+        } catch (error) {
+          console.warn("[saved] sync failed:", error);
+          setToast("Could not sync saved jobs. Check Supabase auth / user_saved_jobs.");
+          // Revert optimistic update
+          setFavorites((prev) =>
+            isSaved ? [...prev, companyId] : prev.filter((id) => id !== companyId),
+          );
+        }
+      })();
+    },
+    [user, favoriteCompanyIds],
+  );
+
   const login = useCallback((name: string, email: string) => {
-    setUser({ name, email });
+    // Local fallback when OAuth is unavailable — still no persisted saved jobs without auth.users.id
+    setUser({ id: `local-${email}`, name, email });
     setAuthMode(null);
-    setToast(`Welcome${name ? `, ${name}` : ""}. Favorites stay on this device.`);
+    setFavorites([]);
+    setToast(`Welcome${name ? `, ${name}` : ""}. Use Google to sync saved jobs.`);
   }, []);
 
   const logout = useCallback(() => {
+    void signOutSupabase().catch(() => undefined);
     setUser(null);
+    setFavorites([]);
+    setSaved([]);
     setToast("Signed out.");
   }, []);
 
@@ -250,12 +330,21 @@ export function StoreProvider({
 
   const saveApplication = useCallback(
     (roleId: string, status: SavedStatus) => {
+      if (!user) {
+        setAuthMode("login");
+        setToast("Log in with Google to save applications.");
+        return;
+      }
       const role = getRole(roleId);
       const company = role ? getCompany(role.companyId) : undefined;
       if (!role || !company) return;
       const notes = fitNotes[roleId] ?? "";
       const evidenceSummary = buildEvidenceSummary(role, company);
-      const today = "March 13, 2026";
+      const today = new Date().toLocaleDateString("en-CA", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
       setSaved((prev) => {
         const existing = prev.find((item) => item.roleId === roleId);
         if (existing) {
@@ -278,18 +367,30 @@ export function StoreProvider({
           ...prev,
         ];
       });
-      setToast("Saved. Fit notes and status are on Saved applications.");
+      void saveCompanyForUser(user.id, company.id, company.name).catch(() => undefined);
+      setFavorites((prev) => (prev.includes(company.id) ? prev : [...prev, company.id]));
+      setToast("Saved to your account.");
     },
-    [fitNotes],
+    [fitNotes, user],
   );
 
   const updateSavedStatus = useCallback((savedId: string, status: SavedStatus) => {
     setSaved((prev) => prev.map((item) => (item.id === savedId ? { ...item, status } : item)));
   }, []);
 
-  const removeSaved = useCallback((savedId: string) => {
-    setSaved((prev) => prev.filter((item) => item.id !== savedId));
-  }, []);
+  const removeSaved = useCallback(
+    (savedId: string) => {
+      setSaved((prev) => {
+        const item = prev.find((row) => row.id === savedId);
+        if (item && user) {
+          void removeSavedCompanyForUser(user.id, item.companyId).catch(() => undefined);
+          setFavorites((favs) => favs.filter((id) => id !== item.companyId));
+        }
+        return prev.filter((row) => row.id !== savedId);
+      });
+    },
+    [user],
+  );
 
   const value: Store = {
     ready,
