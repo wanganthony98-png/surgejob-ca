@@ -9,7 +9,7 @@
     "lint": "eslint",
     "scrape:jobs": "node scripts/scrapeJobs.js",
     "test:openai": "node --env-file=.env.local scripts/testOpenAI.js",
-    "test:unit": "tsc lib/filterMatch.ts lib/companyLocations.ts lib/auth.ts lib/types.ts --outDir tests/.tmp --module commonjs --moduleResolution node --target es2020 --esModuleInterop --skipLibCheck && node --test tests/scraper.test.js tests/frontend-logic.test.js"
+    "test:unit": "tsc lib/filterMatch.ts lib/companyLocations.ts lib/auth.ts lib/savedJobs.ts lib/types.ts --outDir tests/.tmp --module commonjs --moduleResolution node --target es2020 --esModuleInterop --skipLibCheck && node --test tests/scraper.test.js tests/frontend-logic.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

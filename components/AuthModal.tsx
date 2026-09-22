@@ -75,7 +75,7 @@ export function AuthModal() {
             {isSignup ? "Create your account" : "Log in"}
           </h3>
           <p className="mt-1 text-sm text-slate-500">
-            Simulated auth for this prototype. Favorites persist in this browser.
+            Log in with Google to save jobs to your account and sync them across devices.
           </p>
           <button
             type="button"

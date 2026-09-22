@@ -1,6 +1,7 @@
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 
 export type AuthUser = {
+  id: string;
   name: string;
   email: string;
   avatarUrl: string | null;
@@ -24,7 +25,8 @@ export function userFromSession(session: Session | null | undefined): AuthUser |
     (email ? email.split("@")[0] : "") ??
     "Member";
   const avatarUrl = firstString(meta.avatar_url, meta.picture) ?? null;
-  return { name: name || "Member", email, avatarUrl };
+  const id = typeof user.id === "string" ? user.id : "";
+  return { id, name: name || "Member", email, avatarUrl };
 }
 
 /** Trigger Supabase Google OAuth, redirecting back to `${origin}/auth/callback`. */

@@ -11,7 +11,6 @@ import {
 import {
   buildEvidenceSummary,
   companies as seedCompanies,
-  defaultSaved,
   getCompany,
   getRole,
   roleForCompany,
@@ -27,6 +26,7 @@ import {
 } from "./filterMatch";
 import { companyMatchesLocation } from "./companyLocations";
 import { signInWithGoogle as signInWithGoogleRequest, userFromSession } from "./auth";
+import { addSavedJob, fetchSavedCompanyIds, removeSavedJob } from "./savedJobs";
 import { supabase } from "./supabaseClient";
 import type { AuthUser } from "./auth";
 import type { Company, Filters, SavedApplication, SavedStatus, View } from "./types";
@@ -44,7 +44,7 @@ const defaultFilters: Filters = {
 
 type Persisted = {
   selectedCompanyIds: string[];
-  favoriteCompanyIds: string[];
+  // Saved jobs/favorites are bound to the user's Supabase account, not localStorage.
   saved: SavedApplication[];
   fitNotes: Record<string, string>;
   filters: Filters;
@@ -135,10 +135,9 @@ export function StoreProvider({
   const [selectedCompanyIds, setSelected] = useState<string[]>([]);
   const [favoriteCompanyIds, setFavorites] = useState<string[]>([]);
   const [expandedIds, setExpanded] = useState<string[]>([]);
-  const [saved, setSaved] = useState<SavedApplication[]>(defaultSaved);
-  const [fitNotes, setFitNotesState] = useState<Record<string, string>>({
-    "maplestack-designer": defaultSaved[0].fitNotes,
-  });
+  // Saved applications and saved jobs/favorites start empty (Saved 0) by default.
+  const [saved, setSaved] = useState<SavedApplication[]>([]);
+  const [fitNotes, setFitNotesState] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>(null);
@@ -150,11 +149,9 @@ export function StoreProvider({
       if (raw) {
         const parsed = JSON.parse(raw) as Persisted;
         setSelected(parsed.selectedCompanyIds ?? []);
-        setFavorites(parsed.favoriteCompanyIds ?? []);
-        setSaved(parsed.saved?.length ? parsed.saved : defaultSaved);
-        setFitNotesState(
-          parsed.fitNotes ?? { "maplestack-designer": defaultSaved[0].fitNotes },
-        );
+        // Favorites are account-bound (Supabase), never restored from localStorage.
+        setSaved(parsed.saved ?? []);
+        setFitNotesState(parsed.fitNotes ?? {});
         setFiltersState({ ...defaultFilters, ...parsed.filters });
         setUser(parsed.user ?? null);
       }
@@ -169,12 +166,27 @@ export function StoreProvider({
   useEffect(() => {
     let active = true;
 
+    // Pull the user's saved jobs from Supabase so state persists across devices.
+    const hydrateSavedJobs = (sessionUser: AuthUser | null) => {
+      if (!sessionUser?.id) return;
+      fetchSavedCompanyIds(supabase, sessionUser.id)
+        .then((ids) => {
+          if (active) setFavorites(ids);
+        })
+        .catch(() => {
+          /* Unreachable auth/db (e.g. local placeholder); leave favorites as-is. */
+        });
+    };
+
     supabase.auth
       .getSession()
       .then(({ data }) => {
         if (!active) return;
         const sessionUser = userFromSession(data.session);
-        if (sessionUser) setUser(sessionUser);
+        if (sessionUser) {
+          setUser(sessionUser);
+          hydrateSavedJobs(sessionUser);
+        }
       })
       .catch(() => {
         /* No reachable auth server (e.g. local placeholder); keep local user. */
@@ -184,8 +196,10 @@ export function StoreProvider({
       const sessionUser = userFromSession(session);
       if (sessionUser) {
         setUser(sessionUser);
+        hydrateSavedJobs(sessionUser);
       } else if (event === "SIGNED_OUT") {
         setUser(null);
+        setFavorites([]);
       }
     });
 
@@ -199,14 +213,13 @@ export function StoreProvider({
     if (!ready) return;
     const payload: Persisted = {
       selectedCompanyIds,
-      favoriteCompanyIds,
       saved,
       fitNotes,
       filters,
       user,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [ready, selectedCompanyIds, favoriteCompanyIds, saved, fitNotes, filters, user]);
+  }, [ready, selectedCompanyIds, saved, fitNotes, filters, user]);
 
   useEffect(() => {
     if (!toast) return;
@@ -241,20 +254,49 @@ export function StoreProvider({
     setSelected((prev) => prev.filter((id) => id !== companyId));
   }, []);
 
-  const toggleFavorite = useCallback((companyId: string) => {
-    setFavorites((prev) =>
-      prev.includes(companyId) ? prev.filter((id) => id !== companyId) : [...prev, companyId],
-    );
-  }, []);
+  const toggleFavorite = useCallback(
+    (companyId: string) => {
+      // Guests (or users without a Supabase account) are prompted to log in.
+      if (!user?.id) {
+        setToast("Please log in to save jobs to your account.");
+        setAuthMode("login");
+        return;
+      }
+
+      const wasSaved = favoriteCompanyIds.includes(companyId);
+      // Optimistic UI update, then sync to Supabase (revert on failure).
+      setFavorites((prev) =>
+        wasSaved ? prev.filter((id) => id !== companyId) : [...prev, companyId],
+      );
+
+      const sync = wasSaved
+        ? removeSavedJob(supabase, user.id, companyId)
+        : addSavedJob(supabase, user.id, companyId);
+
+      sync.catch(() => {
+        setFavorites((prev) =>
+          wasSaved
+            ? prev.includes(companyId)
+              ? prev
+              : [...prev, companyId]
+            : prev.filter((id) => id !== companyId),
+        );
+        setToast("Couldn't sync your saved jobs. Please try again.");
+      });
+    },
+    [user, favoriteCompanyIds],
+  );
 
   const openAuth = useCallback((mode: AuthMode) => {
     setAuthMode(mode);
   }, []);
 
   const login = useCallback((name: string, email: string) => {
-    setUser({ name, email, avatarUrl: null });
+    // Simulated local login (no Supabase account): id is empty, so saving still
+    // prompts a real Google sign-in. Real accounts arrive via signInWithGoogle.
+    setUser({ id: "", name, email, avatarUrl: null });
     setAuthMode(null);
-    setToast(`Welcome${name ? `, ${name}` : ""}. Favorites stay on this device.`);
+    setToast(`Welcome${name ? `, ${name}` : ""}.`);
   }, []);
 
   const signInWithGoogle = useCallback(async () => {

@@ -10,6 +10,7 @@ const {
   collectLocationOptions,
 } = require("./.tmp/companyLocations.js");
 const { userFromSession, signInWithGoogle } = require("./.tmp/auth.js");
+const { fetchSavedCompanyIds, addSavedJob, removeSavedJob } = require("./.tmp/savedJobs.js");
 
 function company(overrides = {}) {
   return {
@@ -87,13 +88,117 @@ test("userFromSession maps Supabase session metadata to the app user", () => {
   assert.equal(userFromSession({ user: null }), null);
 
   const u = userFromSession({
-    user: { email: "ada@ex.com", user_metadata: { full_name: "Ada Byron", avatar_url: "https://img/a.png" } },
+    user: {
+      id: "uid-123",
+      email: "ada@ex.com",
+      user_metadata: { full_name: "Ada Byron", avatar_url: "https://img/a.png" },
+    },
   });
-  assert.deepEqual(u, { name: "Ada Byron", email: "ada@ex.com", avatarUrl: "https://img/a.png" });
+  assert.deepEqual(u, {
+    id: "uid-123",
+    name: "Ada Byron",
+    email: "ada@ex.com",
+    avatarUrl: "https://img/a.png",
+  });
 
-  const fallback = userFromSession({ user: { email: "grace@ex.com", user_metadata: {} } });
+  const fallback = userFromSession({ user: { id: "uid-9", email: "grace@ex.com", user_metadata: {} } });
+  assert.equal(fallback.id, "uid-9");
   assert.equal(fallback.name, "grace");
   assert.equal(fallback.avatarUrl, null);
+});
+
+test("fetchSavedCompanyIds returns the user's saved company IDs (filtering blanks)", async () => {
+  const calls = {};
+  const client = {
+    from(table) {
+      calls.table = table;
+      const q = {
+        select(cols) {
+          calls.select = cols;
+          return q;
+        },
+        eq(col, val) {
+          calls.eq = { col, val };
+          return q;
+        },
+        then(resolve) {
+          resolve({
+            data: [{ company_id: "northstar" }, { company_id: "kitepath" }, { company_id: "" }],
+            error: null,
+          });
+        },
+      };
+      return q;
+    },
+  };
+  const ids = await fetchSavedCompanyIds(client, "user-1");
+  assert.deepEqual(ids, ["northstar", "kitepath"]);
+  assert.equal(calls.table, "user_saved_jobs");
+  assert.deepEqual(calls.eq, { col: "user_id", val: "user-1" });
+});
+
+test("addSavedJob upserts on the user_id + company_id composite key", async () => {
+  let captured = null;
+  const client = {
+    from() {
+      return {
+        upsert(row, opts) {
+          captured = { row, opts };
+          return Promise.resolve({ error: null });
+        },
+      };
+    },
+  };
+  await addSavedJob(client, "u1", "northstar");
+  assert.deepEqual(captured.row, { user_id: "u1", company_id: "northstar" });
+  assert.equal(captured.opts.onConflict, "user_id,company_id");
+});
+
+test("removeSavedJob deletes the row scoped to user_id + company_id", async () => {
+  const eqs = [];
+  const client = {
+    from() {
+      return {
+        delete() {
+          const q = {
+            eq(col, val) {
+              eqs.push({ col, val });
+              return q;
+            },
+            then(resolve) {
+              resolve({ error: null });
+            },
+          };
+          return q;
+        },
+      };
+    },
+  };
+  await removeSavedJob(client, "u1", "northstar");
+  assert.deepEqual(eqs, [
+    { col: "user_id", val: "u1" },
+    { col: "company_id", val: "northstar" },
+  ]);
+});
+
+test("saved-jobs helpers propagate Supabase errors", async () => {
+  const client = {
+    from() {
+      const q = {
+        select() {
+          return q;
+        },
+        eq() {
+          return q;
+        },
+        then(resolve) {
+          resolve({ data: null, error: new Error("db down") });
+        },
+      };
+      return q;
+    },
+  };
+  await assert.rejects(() => fetchSavedCompanyIds(client, "u1"), /db down/);
 });
 
 test("signInWithGoogle calls Supabase OAuth with provider google + redirect", async () => {
