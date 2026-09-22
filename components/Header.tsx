@@ -1,6 +1,6 @@
 "use client";
 
-import { Bookmark, GitCompare, Heart, ShieldCheck } from "lucide-react";
+import { Bookmark, GitCompare, Heart, LogOut, ShieldCheck } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { Logo } from "./Logo";
 
@@ -13,10 +13,17 @@ export function Header() {
     saved,
     favoriteCompanyIds,
     user,
-    openAuth,
+    signInWithGoogle,
     logout,
   } = useStore();
   const compareCount = selectedCompanyIds.length;
+
+  function initialsFrom(name: string) {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "SJ";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
 
   return (
     <header className="fixed inset-x-0 top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur">
@@ -73,29 +80,48 @@ export function Header() {
           </button>
           {user ? (
             <div className="flex items-center gap-2">
-              <span className="hidden max-w-[9rem] truncate text-sm text-slate-600 md:block">
-                {user.name}
+              <span
+                className="flex items-center gap-2 rounded-full border border-slate-200 bg-white py-1 pl-1 pr-3"
+                title={user.email || user.name}
+              >
+                {user.avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.name}
+                    referrerPolicy="no-referrer"
+                    className="h-7 w-7 rounded-full object-cover"
+                  />
+                ) : (
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#c41e3a] text-xs font-semibold text-white">
+                    {initialsFrom(user.name)}
+                  </span>
+                )}
+                <span className="hidden max-w-[9rem] truncate text-sm font-medium text-slate-700 sm:block">
+                  {user.name}
+                </span>
               </span>
               <button
                 type="button"
                 onClick={logout}
-                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
-                Log out
+                <LogOut className="h-4 w-4" />
+                <span className="hidden sm:inline">Sign Out</span>
               </button>
             </div>
           ) : (
             <>
               <button
                 type="button"
-                onClick={() => openAuth("login")}
+                onClick={() => signInWithGoogle()}
                 className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
                 Log In
               </button>
               <button
                 type="button"
-                onClick={() => openAuth("signup")}
+                onClick={() => signInWithGoogle()}
                 className="rounded-lg bg-[#c41e3a] px-3 py-2 text-sm font-medium text-white hover:bg-[#a81830]"
               >
                 Sign Up

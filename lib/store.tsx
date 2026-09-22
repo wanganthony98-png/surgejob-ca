@@ -20,11 +20,15 @@ import {
 } from "./seed";
 import {
   fundingMatches,
+  hasOpenRoles,
   industryMatches,
   isOpenFilter,
-  locationMatches,
   sizeMatches,
 } from "./filterMatch";
+import { companyMatchesLocation } from "./companyLocations";
+import { signInWithGoogle as signInWithGoogleRequest, userFromSession } from "./auth";
+import { supabase } from "./supabaseClient";
+import type { AuthUser } from "./auth";
 import type { Company, Filters, SavedApplication, SavedStatus, View } from "./types";
 
 const STORAGE_KEY = "surgejob-v2";
@@ -44,7 +48,7 @@ type Persisted = {
   saved: SavedApplication[];
   fitNotes: Record<string, string>;
   filters: Filters;
-  user: { name: string; email: string } | null;
+  user: AuthUser | null;
 };
 
 type AuthMode = "login" | "signup" | null;
@@ -60,7 +64,7 @@ type Store = {
   saved: SavedApplication[];
   fitNotes: Record<string, string>;
   toast: string | null;
-  user: { name: string; email: string } | null;
+  user: AuthUser | null;
   authMode: AuthMode;
   setView: (view: View) => void;
   setFilters: (next: Partial<Filters> | Filters) => void;
@@ -75,6 +79,7 @@ type Store = {
   removeSaved: (savedId: string) => void;
   openAuth: (mode: AuthMode) => void;
   login: (name: string, email: string) => void;
+  signInWithGoogle: () => Promise<{ error: Error | null }>;
   logout: () => void;
   notify: (message: string) => void;
   detailCompanyId: string | null;
@@ -90,11 +95,13 @@ const StoreContext = createContext<Store | null>(null);
 function matchesFilters(companyId: string, filters: Filters) {
   const company = getCompany(companyId);
   if (!company) return false;
+  // Defense-in-depth: never surface companies without open roles on the board.
+  if (!hasOpenRoles(company)) return false;
   const role = roleForCompany(companyId);
 
   if (!industryMatches(company.industry, filters.industry)) return false;
   if (!fundingMatches(company.fundingRound, filters.funding)) return false;
-  if (!locationMatches(company.location, filters.location)) return false;
+  if (!companyMatchesLocation(company, roles, filters.location)) return false;
   if (!sizeMatches(company.headcount, filters.size)) return false;
   if (filters.rating === "4.0+" && (company.glassdoorRating === null || company.glassdoorRating < 4)) {
     return false;
@@ -133,7 +140,7 @@ export function StoreProvider({
     "maplestack-designer": defaultSaved[0].fitNotes,
   });
   const [toast, setToast] = useState<string | null>(null);
-  const [user, setUser] = useState<{ name: string; email: string } | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>(null);
   const [detailCompanyId, setDetailCompanyId] = useState<string | null>(null);
 
@@ -157,6 +164,35 @@ export function StoreProvider({
     setReady(true);
     const timer = window.setTimeout(() => setLoading(false), 700);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (!active) return;
+        const sessionUser = userFromSession(data.session);
+        if (sessionUser) setUser(sessionUser);
+      })
+      .catch(() => {
+        /* No reachable auth server (e.g. local placeholder); keep local user. */
+      });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
+      const sessionUser = userFromSession(session);
+      if (sessionUser) {
+        setUser(sessionUser);
+      } else if (event === "SIGNED_OUT") {
+        setUser(null);
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -216,12 +252,34 @@ export function StoreProvider({
   }, []);
 
   const login = useCallback((name: string, email: string) => {
-    setUser({ name, email });
+    setUser({ name, email, avatarUrl: null });
     setAuthMode(null);
     setToast(`Welcome${name ? `, ${name}` : ""}. Favorites stay on this device.`);
   }, []);
 
-  const logout = useCallback(() => {
+  const signInWithGoogle = useCallback(async () => {
+    const redirectTo =
+      typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : undefined;
+    try {
+      const { error } = await signInWithGoogleRequest(supabase, redirectTo);
+      if (error) {
+        setToast(`Google sign-in failed: ${error.message}`);
+        return { error };
+      }
+      return { error: null };
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      setToast(`Google sign-in failed: ${normalized.message}`);
+      return { error: normalized };
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      /* Ignore network errors from a placeholder/unreachable auth server. */
+    }
     setUser(null);
     setToast("Signed out.");
   }, []);
@@ -317,6 +375,7 @@ export function StoreProvider({
     removeSaved,
     openAuth,
     login,
+    signInWithGoogle,
     logout,
     notify,
     detailCompanyId,
