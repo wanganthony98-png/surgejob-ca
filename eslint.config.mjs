@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Node-based unit tests (CommonJS) and their compiled TS output.
+    "tests/**",
   ]),
 ]);
 
