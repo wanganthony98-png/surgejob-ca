@@ -1,3 +1,19 @@
+import type { Company } from "./types";
+
+/**
+ * A company is shown only when it has at least one open role. In live Supabase
+ * data an empty `open_roles`/`peer_roles` array travels with `open_role_count: 0`,
+ * so we treat either a positive count OR a non-empty roles array as "has roles"
+ * to avoid hiding rows whose count and array are briefly out of sync.
+ */
+export function hasOpenRoles(
+  company: Pick<Company, "openRoleCount" | "peerRoles">,
+): boolean {
+  const count = Number(company.openRoleCount ?? 0);
+  if (Number.isFinite(count) && count > 0) return true;
+  return Array.isArray(company.peerRoles) && company.peerRoles.length > 0;
+}
+
 /** Treat "All" / "all" / empty filter values as unfiltered. */
 export function isOpenFilter(value: string | null | undefined) {
   if (value == null) return true;

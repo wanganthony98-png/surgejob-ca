@@ -1,6 +1,7 @@
 import { SurgeJobApp } from "@/components/SurgeJobApp";
 import { mockData } from "@/lib/seed";
 import { mapCompanyRows } from "@/lib/mapCompany";
+import { hasOpenRoles } from "@/lib/filterMatch";
 import { supabase } from "@/lib/supabaseClient";
 import type { Company } from "@/lib/types";
 
@@ -85,7 +86,9 @@ async function loadCompanies() {
     if (!rows) return mockData;
 
     const usable = rows.filter(hasValidProfile);
-    const live = sortCompanies(mapCompanyRows(usable));
+    // Hide companies with no open roles from the board; they stay in Supabase
+    // for future pipeline runs but are not surfaced until they have active roles.
+    const live = sortCompanies(mapCompanyRows(usable)).filter(hasOpenRoles);
     return live.length > 0 ? live : mockData;
   } catch {
     return mockData;

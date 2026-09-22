@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { SearchX } from "lucide-react";
 import { isOpenFilter } from "@/lib/filterMatch";
-import { industries } from "@/lib/seed";
+import { collectLocationOptions } from "@/lib/companyLocations";
+import { industries, roles } from "@/lib/seed";
 import { useStore } from "@/lib/store";
 import type { Company } from "@/lib/types";
 import { CompanyCard } from "./CompanyCard";
@@ -48,6 +49,11 @@ export function Dashboard() {
     const source = filteredCompanies.length > 0 ? filteredCompanies : companies;
     return source.map(withActiveFallback);
   }, [filteredCompanies, companies]);
+
+  const locationOptions = useMemo<string[][]>(() => {
+    const dynamic = collectLocationOptions(companies, roles).map((loc) => [loc, loc]);
+    return [["all", "Any city"], ...dynamic];
+  }, [companies]);
 
   const totalPages = Math.max(1, Math.ceil(displayCompanies.length / ITEMS_PER_PAGE));
   const paginatedCompanies = displayCompanies.slice(
@@ -102,14 +108,7 @@ export function Dashboard() {
               label="Location"
               value={filters.location}
               onChange={(location) => setFilters({ location })}
-              options={[
-                ["all", "Any city"],
-                ["Toronto, ON", "Toronto, ON"],
-                ["Montreal, QC", "Montreal, QC"],
-                ["Vancouver, BC", "Vancouver, BC"],
-                ["Waterloo, ON", "Waterloo, ON"],
-                ["Ottawa, ON", "Ottawa, ON"],
-              ]}
+              options={locationOptions}
             />
             <FilterSelect
               label="Company size"
