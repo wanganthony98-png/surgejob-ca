@@ -11,7 +11,7 @@ import {
   formatFreshnessLabel,
   toIsoDate,
 } from "./freshness";
-import { resolveRoleApplyUrl } from "./jobUrlSafety";
+import { isVerifiedDirectRoleUrl, safeCompanyUrl, type RoleUrlContext } from "./jobUrlSafety";
 
 function asString(value: unknown, fallback = "") {
   if (value === null || value === undefined) return fallback;
@@ -94,7 +94,7 @@ function isPeerRole(role: PeerRole | null | undefined): role is PeerRole {
   return role != null && typeof role.title === "string" && role.title.trim().length > 0;
 }
 
-function parsePeerRoles(value: unknown): PeerRole[] {
+function parsePeerRoles(value: unknown, context: RoleUrlContext = {}): PeerRole[] {
   let raw = value;
   if (typeof raw === "string") {
     try {
@@ -111,7 +111,7 @@ function parsePeerRoles(value: unknown): PeerRole[] {
     const title = asString(row.title).trim();
     const location = sanitizeRoleLocation(asString(row.location, "Remote (Canada)"));
     const rawUrl = asNullableString(row.url ?? row.apply_url ?? row.applyUrl ?? row.job_url);
-    const url = resolveRoleApplyUrl(rawUrl, null);
+    const url = isVerifiedDirectRoleUrl(rawUrl, context) ? String(rawUrl).trim() : null;
     const postedAt = toIsoDate(
       asNullableString(row.postedAt ?? row.posted_at ?? row.posted_date ?? row.postedDate),
     );
@@ -120,6 +120,7 @@ function parsePeerRoles(value: unknown): PeerRole[] {
       title,
       location,
       url,
+      job_url: rawUrl,
       postedAt: postedAt ?? null,
     };
     return role;
@@ -190,7 +191,18 @@ export function mapCompanyRow(row: Record<string, unknown>): Company | null {
         ? true
         : true;
 
-  const peerRoles = parsePeerRoles(row.peerRoles ?? row.peer_roles);
+  const websiteUrl = asUrl(row.websiteUrl ?? row.website_url ?? row.website ?? row.domain);
+  const careersUrl = safeCompanyUrl(
+    asNullableString(row.careersUrl ?? row.careers_url ?? row.applyUrl ?? row.apply_url),
+  );
+  const peerRoles = parsePeerRoles(
+    row.peerRoles ?? row.peer_roles ?? row.openRoles ?? row.open_roles,
+    {
+      companyName: name,
+      careersUrl,
+      websiteUrl,
+    },
+  );
   const openRoleCount = asNumber(row.openRoleCount ?? row.open_role_count) ?? 0;
   const freshnessFromRow = toIsoDate(
     asNullableString(row.freshness ?? row.freshness_date ?? row.freshnessDate),
@@ -235,7 +247,8 @@ export function mapCompanyRow(row: Record<string, unknown>): Company | null {
     isActive,
     linkedinUrl: asNullableString(row.linkedinUrl ?? row.linkedin_url),
     applyUrl: asNullableString(row.applyUrl ?? row.apply_url),
-    websiteUrl: asUrl(row.websiteUrl ?? row.website_url ?? row.website ?? row.domain),
+    careersUrl,
+    websiteUrl,
     hiringSignal: asNullableString(row.hiringSignal ?? row.hiring_signal),
     peerRoles,
     freshness,

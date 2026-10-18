@@ -13,7 +13,11 @@ import {
 } from "recharts";
 import { calculateRadarScores, surgeFromRadarScores } from "@/lib/calculateRadarScores";
 import { getCompanyActionUrls, getLinkedInPeopleUrl } from "@/lib/companyUrls";
-import { resolveRoleApplyUrl } from "@/lib/jobUrlSafety";
+import {
+  isLinkedInAuthWallJobUrl,
+  isVerifiedDirectRoleUrl,
+  urlsPointAtSamePage,
+} from "@/lib/jobUrlSafety";
 import { getScoreReason, type RadarDimension } from "@/lib/getScoreReason";
 import { formatArrangement, formatFunding, unavailable } from "@/lib/seed";
 import { resolveCompanyFreshness } from "@/lib/freshness";
@@ -246,14 +250,31 @@ export function CompanyDetailModal() {
                   </p>
                   <div className="space-y-3">
                     {peerRoles.length > 0 ? (
-                      peerRoles.map((job) => {
-                        const href =
-                          resolveRoleApplyUrl(job.url, actionUrls.careersUrl) ||
-                          actionUrls.careersUrl ||
-                          actionUrls.linkedInJobsUrl;
+                      peerRoles.map((job, index) => {
+                        const rawRoleUrl = job.url || job.job_url || null;
+                        const careersUrl = company.careersUrl || null;
+                        const roleContext = {
+                          careersUrl,
+                          websiteUrl: company.websiteUrl,
+                          companyName: company.name,
+                        };
+                        const linkedInTrap =
+                          isLinkedInAuthWallJobUrl(rawRoleUrl) ||
+                          /linkedin\.com\/jobs\/view\//i.test(String(rawRoleUrl || ""));
+                        const verifiedDirect =
+                          rawRoleUrl &&
+                          !linkedInTrap &&
+                          isVerifiedDirectRoleUrl(rawRoleUrl, roleContext)
+                            ? rawRoleUrl
+                            : null;
+                        const href = verifiedDirect || careersUrl || null;
+                        const label =
+                          href && verifiedDirect && !urlsPointAtSamePage(href, careersUrl)
+                            ? "Apply"
+                            : "Careers";
                         return (
                           <div
-                            key={`${job.title}-${job.url || "careers"}`}
+                            key={`${index}-${job.title}`}
                             className="rounded-r-xl border border-slate-200 border-l-4 border-l-emerald-500 bg-slate-50 p-4"
                           >
                             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -284,17 +305,24 @@ export function CompanyDetailModal() {
                                   Find who&apos;s in this role on LinkedIn →
                                 </a>
                               </div>
-                              <a
-                                href={href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-700"
-                              >
-                                {job.url && resolveRoleApplyUrl(job.url, null)
-                                  ? "Apply"
-                                  : "Careers"}
-                                <ExternalLink className="h-3.5 w-3.5" />
-                              </a>
+                              {href ? (
+                                <a
+                                  href={href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-700"
+                                >
+                                  {label}
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </a>
+                              ) : (
+                                <span
+                                  className="inline-flex shrink-0 cursor-not-allowed items-center gap-1 rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-bold text-slate-500"
+                                  title="No official careers page is on file for this company"
+                                >
+                                  Careers
+                                </span>
+                              )}
                             </div>
                           </div>
                         );
