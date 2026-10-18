@@ -8,6 +8,13 @@ const { randomUUID } = require("crypto");
 const { ApifyClient } = require("apify-client");
 const OpenAI = require("openai");
 const { createClient } = require("@supabase/supabase-js");
+const {
+  isContaminatedJobUrl,
+  isUsableJobUrl,
+  isVerifiedDirectRoleUrl,
+  resolveRoleApplyUrl,
+  safeCompanyUrl,
+} = require("./roleUrlSafety");
 
 const APIFY_ACTOR = process.env.APIFY_ACTOR || "scrapeify/google-news-scraper";
 const NEWS_QUERY =
@@ -416,7 +423,7 @@ const EXTRACTION_SCHEMA = {
     open_roles: {
       type: "array",
       description:
-        "Roles ONLY when the article explicitly lists them with a real apply URL in the text. Prefer empty array.",
+        "Roles ONLY when the source HTML explicitly lists them for this company. Prefer an empty array. Never attach a LinkedIn recommended-job link.",
       items: {
         type: "object",
         additionalProperties: false,
@@ -426,7 +433,7 @@ const EXTRACTION_SCHEMA = {
           job_url: {
             type: ["string", "null"],
             description:
-              "Copy the exact URL from the source if present. NEVER invent, guess, or generate LinkedIn/job URLs. null when absent.",
+              "The role url. Set ONLY when the source HTML contains an explicit verified link for THIS role on the company domain or a trusted ATS board (greenhouse.io, lever.co, ashbyhq.com, workable.com) that belongs to the company. NEVER use linkedin.com/jobs/view/ — logged-out LinkedIn injects other companies' recommended jobs. If no verified link exists, set null so the backend falls back to the parent company careers page. Never invent a URL.",
           },
         },
         required: ["title", "location", "job_url"],
@@ -488,9 +495,12 @@ Role / job location formatting (when describing HQ or roles):
 
 open_roles (STRICT — usually empty for funding news):
 - Only include a role when the article/HTML EXPLICITLY lists that job for THIS company.
-- job_url: copy the exact URL from the source text/HTML for that role. If no URL is present, set job_url=null.
+- job_url is the role url. Set it ONLY when the source HTML contains an explicit, verified link for that specific role.
+- NEVER extract linkedin.com/jobs/view/ URLs. Logged-out LinkedIn HTML injects third-party "Recommended Jobs" that belong to other companies. Those links are always invalid, even when the slug mentions the target company.
+- A job_url is allowed only on the target company's own domain, or on a trusted ATS host that belongs to that company: greenhouse.io, lever.co, ashbyhq.com, workable.com.
+- If the only link is a LinkedIn job view, a mismatched external domain, or there is no link, set job_url to null. Do not invent, guess, or copy an example URL. The backend stores the parent company careers page instead.
 - NEVER invent, guess, hallucinate, or reuse example LinkedIn URLs (including any Tim Hortons / restaurant / unrelated employer links).
-- Prefer returning open_roles=[] unless the source clearly enumerates roles with URLs.
+- Prefer returning open_roles=[] unless the source clearly enumerates roles.
 
 Funding (extract from the article text — do NOT invent or default):
 - funding_amount: exact figure when present (e.g. "$1B", "$169M CAD"). null if absent.
@@ -1280,7 +1290,13 @@ function toCompanyRow(extracted, sourceItem) {
         .map((role) => {
           const title = String(role?.title || "").trim();
           if (!title) return null;
-          const jobUrl = resolveRoleApplyUrl(role?.job_url, careersGuess);
+          const explicitJobUrl =
+            role?.job_url != null && String(role.job_url).trim() !== ""
+              ? role.job_url
+              : role?.url;
+          const jobUrl = resolveRoleApplyUrl(explicitJobUrl, careersGuess, {
+            companyName: name,
+          });
           return {
             title,
             location: sanitizeRoleLocation(role?.location),
@@ -1518,8 +1534,8 @@ function normalizeLinkedInJob(item) {
       item.externalApplyUrl ||
       "",
   ).trim();
-  // Never invent / keep contaminated URLs (e.g. Tim Hortons Restaurant Manager).
-  const apply_url = isUsableJobUrl(rawUrl) ? rawUrl : null;
+  // Never keep LinkedIn AuthWall /jobs/view links or unrelated domains.
+  const apply_url = isVerifiedDirectRoleUrl(rawUrl, { companyName: company }) ? rawUrl : null;
   const posted_date = parseJobPostedDate(
     item.postedAt ||
       item.posted_date ||
@@ -1545,32 +1561,6 @@ function hiringSignalFromCount(count) {
   return `High Growth: ${count}+ Open Roles`;
 }
 
-/** Contaminated / example URLs that must never be stored as role apply links. */
-const CONTAMINATED_JOB_URL_RE =
-  /tim[-_]?hortons|mcdonald'?s|starbucks|walmart|loblaw|subway\.com|burger.?king|restaurant[-_]?manager|indeed\.com\/cmp\/tim/i;
-const EXAMPLE_JOB_URL_RE =
-  /linkedin\.com\/jobs\/view\/(northstar|kitepath|harbourgrid|maplestack)|example\.com|placeholder|javascript:void/i;
-
-function isContaminatedJobUrl(url) {
-  if (!url) return false;
-  const text = String(url);
-  return CONTAMINATED_JOB_URL_RE.test(text) || EXAMPLE_JOB_URL_RE.test(text);
-}
-
-function isUsableJobUrl(url) {
-  const raw = String(url || "").trim();
-  if (!raw) return false;
-  if (!/^https?:\/\//i.test(raw)) return false;
-  if (isContaminatedJobUrl(raw)) return false;
-  return true;
-}
-
-function resolveRoleApplyUrl(rawUrl, careersUrl) {
-  if (isUsableJobUrl(rawUrl)) return String(rawUrl).trim();
-  if (isUsableJobUrl(careersUrl)) return String(careersUrl).trim();
-  return null;
-}
-
 function jobBelongsToCompany(job, companyName) {
   const brand = String(companyName || "").trim().toLowerCase();
   if (!brand) return false;
@@ -1587,9 +1577,13 @@ function jobBelongsToCompany(job, companyName) {
   return isUsableJobUrl(url) || !url;
 }
 
-function peerRolesFromJobs(jobs, careersUrl) {
+function peerRolesFromJobs(jobs, careersUrl, companyName) {
+  const careers = safeCompanyUrl(careersUrl);
   return jobs.slice(0, 15).map((job) => {
-    const url = resolveRoleApplyUrl(job.apply_url, careersUrl);
+    const url = resolveRoleApplyUrl(job.apply_url, careers, {
+      companyName: companyName || job.company,
+      careersUrl: careers,
+    });
     return {
       title: job.title,
       location: sanitizeRoleLocation(job.location),
@@ -1738,7 +1732,7 @@ async function enrichOneCompany(client, company) {
     candidateCareers && !/linkedin\.com\/jobs\/view/i.test(String(candidateCareers))
       ? candidateCareers
       : meta.careers_url || null;
-  const peer_roles = peerRolesFromJobs(jobs, careersFallback);
+  const peer_roles = peerRolesFromJobs(jobs, careersFallback, brandName);
   const freshness = aggregateCompanyFreshness(peer_roles);
   const apply_url =
     (candidateCareers && looksLikeAtsCareersUrl(candidateCareers) ? candidateCareers : null) ||
@@ -2194,17 +2188,29 @@ async function scrubContaminatedPeerRoleUrls(supabase) {
       continue;
     }
     const careers =
-      row.apply_url && !isContaminatedJobUrl(row.apply_url) ? row.apply_url : null;
+      safeCompanyUrl(row.careers_url) || safeCompanyUrl(row.apply_url) || null;
+    const context = {
+      companyName: row.name,
+      careersUrl: careers,
+      websiteUrl: safeCompanyUrl(row.website || row.website_url || row.domain),
+    };
     let changed = false;
     const nextRoles = row.peer_roles.map((role) => {
-      const url = role?.url || role?.apply_url || role?.job_url;
-      if (!isContaminatedJobUrl(url) && isUsableJobUrl(url)) return role;
-      if (!url && !role?.url) return role;
-      if (isContaminatedJobUrl(url) || (url && !isUsableJobUrl(url))) {
-        changed = true;
-        return { ...role, url: careers || null };
+      const url = role?.url || role?.apply_url || role?.job_url || null;
+      const resolved = resolveRoleApplyUrl(url, careers, context);
+      const kept =
+        url &&
+        isVerifiedDirectRoleUrl(url, context) &&
+        !/linkedin\.com\/jobs\/view\//i.test(String(url));
+      if (kept && role.url === url && !role.job_url && !role.apply_url) return role;
+      if ((role.url || null) === (resolved || null) && !role.job_url && !role.apply_url) {
+        return role;
       }
-      return role;
+      changed = true;
+      const next = { ...role, url: resolved || null };
+      delete next.job_url;
+      delete next.apply_url;
+      return next;
     });
     const patch = {};
     if (changed) patch.peer_roles = nextRoles;

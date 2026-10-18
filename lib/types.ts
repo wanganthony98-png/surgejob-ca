@@ -15,8 +15,10 @@ export type RadarData = {
 export type PeerRole = {
   title: string;
   location: string;
-  /** Explicit apply URL, or null → UI should use company careers page. */
+  /** Verified apply URL, or null → UI should use company.careersUrl. */
   url: string | null;
+  /** Raw scraper field. The modal ignores this when it is a LinkedIn /jobs/view link. */
+  job_url?: string | null;
   /** Latest known post date for this role (YYYY-MM-DD), if available. */
   postedAt?: string | null;
 };
@@ -47,6 +49,8 @@ export type Company = {
   isActive?: boolean;
   linkedinUrl?: string | null;
   applyUrl?: string | null;
+  /** Official careers page from careers_url / apply_url. Never a guessed domain. */
+  careersUrl?: string | null;
   websiteUrl?: string | null;
   hiringSignal?: string | null;
   peerRoles?: PeerRole[] | null;
